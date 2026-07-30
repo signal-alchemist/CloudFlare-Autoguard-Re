@@ -1,3 +1,5 @@
+import { classifyCmsSignal } from "../domain/cms-component.ts";
+
 export type Environment = "staging" | "production";
 
 export type Component =
@@ -641,16 +643,6 @@ export async function verifyCmsOpsSignalRequest(
   };
 }
 
-function componentFor(signal: CmsOpsSignal): Component {
-  if (signal.event === "contact.delivery_failure") {
-    return "notification_delivery";
-  }
-  if (signal.route === "/api/contact") return "contact_intake";
-  if (signal.route === "/img/:width/:object-key") return "media_delivery";
-  if (signal.route === "/healthz") return "deployment_integrity";
-  return "public_delivery";
-}
-
 export async function toObservation(
   envelope: CmsOpsSignalEnvelope,
   policy: ObservationPolicy,
@@ -670,17 +662,7 @@ export async function toObservation(
     signal.event === "worker.runtime_failure"
       ? signal.fingerprint
       : signal.signalId;
-  const component = componentFor(signal);
-  const scope =
-    signal.event === "worker.runtime_failure" ? signal.route : signal.service;
-  const reasonCode =
-    signal.event === "worker.runtime_failure"
-      ? "worker_runtime_failure"
-      : "contact_delivery_failed";
-  const checkId =
-    signal.event === "worker.runtime_failure"
-      ? "cms_ops.worker_runtime"
-      : "cms_ops.contact_delivery";
+  const classification = classifyCmsSignal(signal);
   const observedAt = signal.occurredAt;
   const validUntil = new Date(
     Date.parse(observedAt) + policy.validForSeconds * 1_000,
@@ -696,14 +678,14 @@ export async function toObservation(
     schemaVersion: 1,
     siteId: policy.siteId,
     environment: envelope.environment,
-    component,
-    checkId,
-    status: "fail",
-    reasonCode,
+    component: classification.component,
+    checkId: classification.checkId,
+    status: classification.status,
+    reasonCode: classification.reasonCode,
     observedAt,
     validUntil,
     source: "cms_ops_signal",
-    scope,
+    scope: classification.scope,
     correlationId: signal.correlationId,
     idempotencyKey,
   } as const;
