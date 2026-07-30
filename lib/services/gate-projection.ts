@@ -19,10 +19,12 @@ export interface OperationalStateRepository {
   readVerdicts(input: {
     siteId: string;
     environment: Environment;
+    nowMs: number;
   }): Promise<readonly ComponentVerdict[]>;
   hasActiveFreeze(input: {
     siteId: string;
     environment: Environment;
+    nowMs: number;
   }): Promise<boolean>;
 }
 
@@ -79,9 +81,14 @@ export function createCompatGateProjection(
         );
       }
       try {
+        const scope = {
+          siteId: input.siteId,
+          environment: input.environment,
+          nowMs: input.nowSeconds * 1_000,
+        };
         const [verdicts, freeze] = await Promise.all([
-          dependencies.repository.readVerdicts(input),
-          dependencies.repository.hasActiveFreeze(input),
+          dependencies.repository.readVerdicts(scope),
+          dependencies.repository.hasActiveFreeze(scope),
         ]);
         const contentPublish = evaluateOperationGate({
           siteId: input.siteId,
@@ -155,10 +162,12 @@ export function createPostDeployOperationalChecker(
           dependencies.repository.readVerdicts({
             siteId: request.siteId,
             environment: request.environment,
+            nowMs,
           }),
           dependencies.repository.hasActiveFreeze({
             siteId: request.siteId,
             environment: request.environment,
+            nowMs,
           }),
         ]);
         const evaluation = evaluateOperationGate({

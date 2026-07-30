@@ -76,6 +76,31 @@ export interface UnknownObservationDecision {
 }
 
 const safeIdentifier = /^[A-Za-z0-9_.:-]+$/u;
+const components = new Set<Component>([
+  "public_delivery",
+  "editorial",
+  "contact_intake",
+  "media_delivery",
+  "notification_delivery",
+  "deployment_integrity",
+  "recovery_readiness",
+  "autoguard_control_plane",
+]);
+const observationSources = new Set<ObservationSource>([
+  "cms_ops_signal",
+  "public_probe",
+  "external_probe",
+  "provider_api",
+  "autoguard_self",
+  "post_deploy",
+]);
+const observationStatuses = new Set([
+  "pass",
+  "fail",
+  "degraded",
+  "unknown",
+  "unsupported",
+]);
 
 function invalid(code: string): never {
   throw new ContractError(code);
@@ -94,6 +119,9 @@ function validatePolicy(policy: ComponentPolicyV1): void {
     policy.schemaVersion !== 1 ||
     !validIdentifier(policy.policyVersion) ||
     !/^[a-z][a-z0-9-]{2,63}$/u.test(policy.siteId) ||
+    (policy.environment !== "staging" &&
+      policy.environment !== "production") ||
+    !components.has(policy.component) ||
     policy.checks.length < 1 ||
     policy.checks.length > 64
   ) {
@@ -106,6 +134,9 @@ function validatePolicy(policy: ComponentPolicyV1): void {
       checkIds.has(check.checkId) ||
       check.requiredSources.length < 1 ||
       new Set(check.requiredSources).size !== check.requiredSources.length ||
+      check.requiredSources.some(
+        (source) => !observationSources.has(source),
+      ) ||
       !Number.isInteger(check.failureQuorum) ||
       check.failureQuorum < 1 ||
       check.failureQuorum > check.requiredSources.length ||
@@ -216,6 +247,18 @@ export function evaluateComponentVerdict(
         continue;
       }
       const selected = latest[0]!;
+      if (
+        selected.schemaVersion !== 1 ||
+        !observationStatuses.has(selected.status)
+      ) {
+        hasUnknown = true;
+        reasons.add(
+          selected.schemaVersion !== 1
+            ? "observation_schema_invalid"
+            : "observation_status_invalid",
+        );
+        continue;
+      }
       const validUntilMs = Date.parse(selected.validUntil);
       if (
         selectedAt > nowMs + check.maxFutureSkewSeconds * 1_000
@@ -244,7 +287,9 @@ export function evaluateComponentVerdict(
           ? validUntilMs
           : Math.min(minimumFreshUntil, validUntilMs);
 
-      if (selected.status === "fail") {
+      if (selected.status === "pass") {
+        // A pass is healthy only after the scope, time, and validity checks.
+      } else if (selected.status === "fail") {
         failureCount += 1;
         reasons.add("required_observation_failed");
       } else if (selected.status === "degraded") {
@@ -256,6 +301,9 @@ export function evaluateComponentVerdict(
       } else if (selected.status === "unsupported") {
         hasUnknown = true;
         reasons.add("required_observation_unsupported");
+      } else {
+        hasUnknown = true;
+        reasons.add("observation_status_invalid");
       }
     }
     if (failureCount >= check.failureQuorum) {

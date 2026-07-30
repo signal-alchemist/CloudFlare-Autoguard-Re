@@ -161,6 +161,20 @@ content type違反は`415`とする。全responseをJSONかつ`no-store`にす�
 
 判定内でnetwork、storage、LLM、現在時刻取得を行わず、clockを引数で渡す。
 
+Live state repositoryはdeployment固定のsite/environment/policy allowlistだけを
+D1から取得する。各component/check/sourceの最新`observedAt`を選び、同時刻の
+recordは全件をpure evaluatorへ渡してconflictを`unknown`にする。Verdictは
+`component_verdicts`へcurrent projectionとしてmaterializeし、Gate読取ごとに
+明示clockで再評価する。D1 read/write、row schema、policy scopeの不整合時は
+過去のhealthyへfallbackせずdenyへ倒す。
+
+Freezeはsite/environment固定で、`releasedAt`がなく、canonicalな
+`activatedAt <= now < expiresAt`を満たす期限付きrecordだけをactiveとする。
+期限切れfreezeはactiveにせず、破損した未release recordはstate不明として
+Gateをdenyする。productionの初期reviewed policyはpublic delivery manifestの
+9 checkを`public_probe + external_probe`の2地点必須にする。CMS ops signalは
+failure-onlyなのでhealthyを証明するrequired sourceには使用しない。
+
 ## 8. API
 
 | Method/path | 用途 |
@@ -192,7 +206,7 @@ noindexを返す。Access失敗responseにも同じ安全headerを付ける。
 
 ## 9. Persistence
 
-- D1: sites、checks、observations、receipts、verdicts、incidents、timeline、
+- D1: sites、checks、observations、receipts、component verdicts、incidents、timeline、
   freezes、jobs、outbox/inbox、audit
 - private R2: failure screenshot等のlarge sanitized evidence
 - Queue/DLQ: check jobとalert deliveryを分離

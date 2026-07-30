@@ -1,6 +1,7 @@
 /** Cloudflare Worker entry point for the vinext-starter template. */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
+import { resolveOperationalPolicySet } from "../config/sites/dfconnect.operational-policy.ts";
 import { handleCompatGateRequest } from "../lib/http/compat-gate.ts";
 import {
   routeCmsSignalIngress,
@@ -20,6 +21,10 @@ import {
   type ConsoleEnvironment,
   type ConsoleIdentityVerifier,
 } from "../lib/http/console-access.ts";
+import {
+  D1OperationalStateRepository,
+  type D1OperationalDatabasePort,
+} from "../lib/repositories/operational-state.ts";
 import { D1PostDeployRepository } from "../lib/repositories/post-deploy.ts";
 import type { D1DatabasePort } from "../lib/repositories/observations.ts";
 import {
@@ -59,14 +64,33 @@ interface ExecutionContext {
   passThroughOnException(): void;
 }
 
-const failClosedOperationalState: OperationalStateRepository = {
+const unavailableOperationalState: OperationalStateRepository = {
   async readVerdicts() {
-    return [];
+    throw new Error("operational_state_unavailable");
   },
   async hasActiveFreeze() {
-    return false;
+    throw new Error("operational_state_unavailable");
   },
 };
+
+function operationalState(env: Env): OperationalStateRepository {
+  if (!env.GUARD_SITE_ID || !env.GUARD_ENVIRONMENT || !env.DB) {
+    return unavailableOperationalState;
+  }
+  const policySet = resolveOperationalPolicySet(
+    env.GUARD_SITE_ID,
+    env.GUARD_ENVIRONMENT,
+  );
+  if (policySet === null) return unavailableOperationalState;
+  try {
+    return new D1OperationalStateRepository(
+      env.DB as unknown as D1OperationalDatabasePort,
+      policySet,
+    );
+  } catch {
+    return unavailableOperationalState;
+  }
+}
 
 function unavailableJson(): Response {
   return Response.json(
@@ -129,7 +153,7 @@ function handleGateRequest(request: Request, env: Env): Promise<Response> {
       clock: Date.now,
     },
     createCompatGateProjection({
-      repository: failClosedOperationalState,
+      repository: operationalState(env),
       clock: Date.now,
     }),
   );
@@ -272,7 +296,7 @@ const worker = {
           env.DB as unknown as D1DatabasePort,
         ),
         checker: createPostDeployOperationalChecker({
-          repository: failClosedOperationalState,
+          repository: operationalState(env),
           clock: Date.now,
         }),
         clockSeconds: () => Math.floor(Date.now() / 1_000),

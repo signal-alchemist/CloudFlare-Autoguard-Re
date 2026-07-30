@@ -1,6 +1,7 @@
 import {
   index,
   integer,
+  primaryKey,
   sqliteTable,
   text,
   uniqueIndex,
@@ -37,6 +38,75 @@ export const observations = sqliteTable(
       table.environment,
       table.component,
       table.observedAt,
+    ),
+    index("observations_verdict_lookup_idx").on(
+      table.siteId,
+      table.environment,
+      table.component,
+      table.checkId,
+      table.source,
+      table.observedAt,
+      table.observationId,
+    ),
+  ],
+);
+
+export const componentVerdicts = sqliteTable(
+  "component_verdicts",
+  {
+    siteId: text("site_id").notNull(),
+    environment: text("environment", {
+      enum: ["staging", "production"],
+    }).notNull(),
+    component: text("component").notNull(),
+    schemaVersion: integer("schema_version").notNull(),
+    policyVersion: text("policy_version").notNull(),
+    state: text("state", {
+      enum: [
+        "healthy",
+        "degraded",
+        "unhealthy",
+        "unknown",
+        "maintenance",
+      ],
+    }).notNull(),
+    reasonCodesJson: text("reason_codes_json").notNull(),
+    observationIdsJson: text("observation_ids_json").notNull(),
+    evaluatedAt: text("evaluated_at").notNull(),
+    freshUntil: text("fresh_until"),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.siteId, table.environment, table.component],
+      name: "component_verdicts_scope_component_pk",
+    }),
+    index("component_verdicts_scope_idx").on(
+      table.siteId,
+      table.environment,
+    ),
+  ],
+);
+
+export const freezes = sqliteTable(
+  "freezes",
+  {
+    freezeId: text("freeze_id").primaryKey(),
+    siteId: text("site_id").notNull(),
+    environment: text("environment", {
+      enum: ["staging", "production"],
+    }).notNull(),
+    reasonCode: text("reason_code").notNull(),
+    correlationId: text("correlation_id").notNull(),
+    activatedAt: text("activated_at").notNull(),
+    expiresAt: text("expires_at").notNull(),
+    releasedAt: text("released_at"),
+  },
+  (table) => [
+    index("freezes_scope_active_idx").on(
+      table.siteId,
+      table.environment,
+      table.releasedAt,
+      table.expiresAt,
     ),
   ],
 );
