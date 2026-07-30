@@ -10,6 +10,7 @@
 | #5 Incident / Notification | #8 state machine、#12 delivery、#13 privacy |
 | #3 Gate / Post-deploy | #11 gate contract、#18 post-deploy、#19 fail-closed |
 | #2 Read-only console | #20 rendering、#15 security/UI、#16 accessibility/remote、#21 private release |
+| #22 Runtime orchestration | #23 signed CMS signal HTTP ingress |
 
 Evidence file naming:
 

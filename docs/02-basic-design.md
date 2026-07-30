@@ -115,11 +115,24 @@ siteDeployだけをepoch秒/HMAC形式で返す。
 4. sentAt clock skew、envelope environment、strict signal schemaを検証
 5. signal identityからidempotency keyを生成
 6. allowlist sanitizerでObservation/evidence metadataへ変換
-7. D1 transactionでObservation、receipt、audit、outboxを保存
+7. D1 transactionでObservation、receipt、auditを保存
 8. duplicateは既存receiptを返す
 
 互換v1に不足するaudience/nonce/expiryはcredential scope、clock window、
 signal identity dedupeで補う。v2で明示fieldへ移行する。
+
+現CMSはsignal送信とGate取得に同じ`AUTOGUARD_ENDPOINT`を使うため、
+`POST /compat/v1/gate`を`POST /v1/signals/cms`と同じingress handlerへ
+method dispatchする。`GET /compat/v1/gate`は既存Gate handlerを維持する。
+signal用credentialは`CMS_SIGNAL_SERVICE_TOKEN` /
+`CMS_SIGNAL_SIGNING_SECRET`を優先し、両方が未設定の場合だけ現CMS移行用に
+Gate credential pairを使う。片方だけの設定、credential/D1 binding欠損、
+D1障害は`503`とし、Observationを受理したように返さない。
+
+Signal HTTP responseは`accepted=202`、fresh retryによる同一Observationは
+`duplicate=200`、auth/signatureはgeneric `401`、scopeは`403`、exact-body
+replayは`409`、strict body/freshness違反は`400`、body上限超過は`413`、
+content type違反は`415`とする。全responseをJSONかつ`no-store`にする。
 
 ## 6. Component mapping
 
@@ -153,6 +166,7 @@ signal identity dedupeで補う。v2で明示fieldへ移行する。
 | Method/path | 用途 |
 |---|---|
 | `POST /v1/signals/cms` | signed CMS ops signal |
+| `POST /compat/v1/gate` | current CMS single-endpoint signal alias |
 | `GET /v1/sites/:siteId/environments/:env/operability` | canonical state |
 | `POST /v1/gate-evaluations` | strict OperationContext gate |
 | `GET /v1/incidents` | sanitized incident list |

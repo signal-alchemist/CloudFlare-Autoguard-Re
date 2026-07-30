@@ -2,6 +2,10 @@
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
 import { handleCompatGateRequest } from "../lib/http/compat-gate.ts";
+import {
+  routeCmsSignalIngress,
+  type CmsSignalHttpDependencies,
+} from "../lib/http/cms-signal.ts";
 import { handlePostDeployRequest } from "../lib/http/post-deploy.ts";
 import {
   applyConsoleSecurityHeaders,
@@ -31,6 +35,8 @@ interface Env {
   GUARD_ENVIRONMENT?: "staging" | "production";
   CMS_GATE_SERVICE_TOKEN?: string;
   CMS_GATE_SIGNING_SECRET?: string;
+  CMS_SIGNAL_SERVICE_TOKEN?: string;
+  CMS_SIGNAL_SIGNING_SECRET?: string;
   CMS_POST_DEPLOY_SERVICE_TOKEN?: string;
   CMS_POST_DEPLOY_SIGNING_SECRET?: string;
   CONSOLE_AUTH_MODE?:
@@ -61,6 +67,73 @@ const failClosedOperationalState: OperationalStateRepository = {
     return false;
   },
 };
+
+function unavailableJson(): Response {
+  return Response.json(
+    { error: "service_unavailable" },
+    {
+      status: 503,
+      headers: { "cache-control": "no-store" },
+    },
+  );
+}
+
+function cmsSignalDependencies(
+  env: Env,
+): CmsSignalHttpDependencies | null {
+  if (!env.GUARD_SITE_ID || !env.GUARD_ENVIRONMENT || !env.DB) return null;
+  const hasDedicatedCredential =
+    env.CMS_SIGNAL_SERVICE_TOKEN !== undefined ||
+    env.CMS_SIGNAL_SIGNING_SECRET !== undefined;
+  const token = hasDedicatedCredential
+    ? env.CMS_SIGNAL_SERVICE_TOKEN
+    : env.CMS_GATE_SERVICE_TOKEN;
+  const signingSecret = hasDedicatedCredential
+    ? env.CMS_SIGNAL_SIGNING_SECRET
+    : env.CMS_GATE_SIGNING_SECRET;
+  if (!token || !signingSecret) return null;
+  return {
+    credentials: [
+      {
+        credentialId: `cms-${env.GUARD_ENVIRONMENT}-v1`,
+        token,
+        signingSecret,
+        siteId: env.GUARD_SITE_ID,
+        environment: env.GUARD_ENVIRONMENT,
+        maxAgeSeconds: 120,
+        maxFutureSkewSeconds: 30,
+        validForSeconds: 180,
+      },
+    ],
+    database: env.DB as unknown as D1DatabasePort,
+    clock: Date.now,
+  };
+}
+
+function handleGateRequest(request: Request, env: Env): Promise<Response> {
+  if (
+    !env.GUARD_SITE_ID ||
+    !env.GUARD_ENVIRONMENT ||
+    !env.CMS_GATE_SERVICE_TOKEN ||
+    !env.CMS_GATE_SIGNING_SECRET
+  ) {
+    return Promise.resolve(unavailableJson());
+  }
+  return handleCompatGateRequest(
+    request,
+    {
+      siteId: env.GUARD_SITE_ID,
+      environment: env.GUARD_ENVIRONMENT,
+      serviceToken: env.CMS_GATE_SERVICE_TOKEN,
+      signingSecret: env.CMS_GATE_SIGNING_SECRET,
+      clock: Date.now,
+    },
+    createCompatGateProjection({
+      repository: failClosedOperationalState,
+      clock: Date.now,
+    }),
+  );
+}
 
 function unavailableConsole(): Response {
   const decision: ConsoleAccessDecision = {
@@ -171,36 +244,11 @@ const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
-    if (url.pathname === "/compat/v1/gate") {
-      if (
-        !env.GUARD_SITE_ID ||
-        !env.GUARD_ENVIRONMENT ||
-        !env.CMS_GATE_SERVICE_TOKEN ||
-        !env.CMS_GATE_SIGNING_SECRET
-      ) {
-        return Response.json(
-          { error: "service_unavailable" },
-          {
-            status: 503,
-            headers: { "cache-control": "no-store" },
-          },
-        );
-      }
-      return handleCompatGateRequest(
-        request,
-        {
-          siteId: env.GUARD_SITE_ID,
-          environment: env.GUARD_ENVIRONMENT,
-          serviceToken: env.CMS_GATE_SERVICE_TOKEN,
-          signingSecret: env.CMS_GATE_SIGNING_SECRET,
-          clock: Date.now,
-        },
-        createCompatGateProjection({
-          repository: failClosedOperationalState,
-          clock: Date.now,
-        }),
-      );
-    }
+    const cmsIngress = await routeCmsSignalIngress(request, {
+      signal: cmsSignalDependencies(env),
+      gate: (gateRequest) => handleGateRequest(gateRequest, env),
+    });
+    if (cmsIngress !== null) return cmsIngress;
 
     if (url.pathname === "/v1/post-deploy-checks") {
       if (
@@ -209,13 +257,7 @@ const worker = {
         !env.CMS_POST_DEPLOY_SERVICE_TOKEN ||
         !env.CMS_POST_DEPLOY_SIGNING_SECRET
       ) {
-        return Response.json(
-          { error: "service_unavailable" },
-          {
-            status: 503,
-            headers: { "cache-control": "no-store" },
-          },
-        );
+        return unavailableJson();
       }
       return handlePostDeployRequest(request, {
         credential: {
