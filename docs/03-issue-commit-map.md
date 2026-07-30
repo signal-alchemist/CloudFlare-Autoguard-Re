@@ -9,7 +9,7 @@
 | #4 Component / Verdict | #9 public delivery、#14 CMS components、#17 freshness |
 | #5 Incident / Notification | #8 state machine、#12 delivery、#13 privacy |
 | #3 Gate / Post-deploy | #11 gate contract、#18 post-deploy、#19 fail-closed |
-| #2 Read-only console | #20 rendering、#15 security/UI、#16 accessibility/remote |
+| #2 Read-only console | #20 rendering、#15 security/UI、#16 accessibility/remote、#21 private release |
 
 Evidence file naming:
 
@@ -26,4 +26,3 @@ docs/evidence/issue-<number>.md
 - PRODUCTION_REMOTE
 - rollback/rehearsal
 - unresolved blocker
-
