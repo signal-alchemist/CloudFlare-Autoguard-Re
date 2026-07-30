@@ -1,5 +1,7 @@
 export type ConsoleEnvironment = "production" | "staging";
 
+import type { ConsoleReasonCode } from "./console-copy";
+
 export interface DashboardComponent {
   id:
     | "public_delivery"
@@ -16,7 +18,7 @@ export interface DashboardComponent {
   summary: string;
   freshness: "NOT RUN";
   evidence: "REMOTE NOT RUN" | "PLANNED";
-  reason: string;
+  reasonCode: ConsoleReasonCode;
 }
 
 export interface DashboardSnapshot {
@@ -79,7 +81,7 @@ const components: readonly DashboardComponent[] = [
     summary: "HTTP・DNS・TLS・canonical・assetを独立probeで確認します。",
     freshness: "NOT RUN",
     evidence: "REMOTE NOT RUN",
-    reason: "外部2地点probeと接続IP attestationが未設定です。",
+    reasonCode: "external_probe_not_configured",
   },
   {
     id: "editorial",
@@ -89,7 +91,7 @@ const components: readonly DashboardComponent[] = [
     summary: "CMS shell・認証negative contract・repository/CIを分離監視します。",
     freshness: "NOT RUN",
     evidence: "REMOTE NOT RUN",
-    reason: "現行CMS signalはfailure-onlyで、正常性を証明できません。",
+    reasonCode: "cms_failure_only_signal",
   },
   {
     id: "contact_intake",
@@ -99,7 +101,7 @@ const components: readonly DashboardComponent[] = [
     summary: "Worker・Turnstile・rate limit・D1・Queue enqueueを確認します。",
     freshness: "NOT RUN",
     evidence: "REMOTE NOT RUN",
-    reason: "本番D1/Queue/Turnstileのread-only確認が未実施です。",
+    reasonCode: "contact_remote_not_run",
   },
   {
     id: "media_delivery",
@@ -109,7 +111,7 @@ const components: readonly DashboardComponent[] = [
     summary: "manifest・private R2・画像変換・known fixtureを確認します。",
     freshness: "NOT RUN",
     evidence: "REMOTE NOT RUN",
-    reason: "R2/Imagesのremote fixture検証が未実施です。",
+    reasonCode: "media_fixture_not_run",
   },
   {
     id: "notification_delivery",
@@ -119,7 +121,7 @@ const components: readonly DashboardComponent[] = [
     summary: "安全なenvelope、2xx marker、retry、DLQを追跡します。",
     freshness: "NOT RUN",
     evidence: "PLANNED",
-    reason: "ローカル配送順序はPASS、Queue・DLQ・providerは未provisionです。",
+    reasonCode: "notification_remote_not_provisioned",
   },
   {
     id: "deployment_integrity",
@@ -129,7 +131,7 @@ const components: readonly DashboardComponent[] = [
     summary: "exact SHA・Worker version・binding・migrationを照合します。",
     freshness: "NOT RUN",
     evidence: "REMOTE NOT RUN",
-    reason: "CMS workflowが実Worker versionをまだ送信していません。",
+    reasonCode: "worker_version_not_reported",
   },
   {
     id: "recovery_readiness",
@@ -139,7 +141,7 @@ const components: readonly DashboardComponent[] = [
     summary: "prior version・D1 bookmark・rehearsal鮮度を確認します。",
     freshness: "NOT RUN",
     evidence: "REMOTE NOT RUN",
-    reason: "復旧rehearsalとowner承認のremote証跡がありません。",
+    reasonCode: "recovery_rehearsal_not_run",
   },
   {
     id: "autoguard_control_plane",
@@ -149,7 +151,7 @@ const components: readonly DashboardComponent[] = [
     summary: "scheduler・D1・Queue・R2・alert heartbeatを自己監視します。",
     freshness: "NOT RUN",
     evidence: "REMOTE NOT RUN",
-    reason: "ローカルbuildはPASSですが、deployed readinessは未取得です。",
+    reasonCode: "guard_remote_readiness_not_run",
   },
 ];
 

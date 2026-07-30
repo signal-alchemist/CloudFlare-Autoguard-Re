@@ -4,19 +4,24 @@ import test from "node:test";
 
 const templateRoot = new URL("../", import.meta.url);
 
-async function render() {
+async function render({
+  url = "http://localhost/",
+  headers = {},
+  env = {},
+} = {}) {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
   workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
   const { default: worker } = await import(workerUrl.href);
 
   return worker.fetch(
-    new Request("http://localhost/", {
-      headers: { accept: "text/html" },
+    new Request(url, {
+      headers: { accept: "text/html", ...headers },
     }),
     {
       ASSETS: {
         fetch: async () => new Response("Not found", { status: 404 }),
       },
+      ...env,
     },
     {
       waitUntil() {},
@@ -29,8 +34,27 @@ test("server-renders the read-only Guard console without presenting remote unkno
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/iu);
+  assert.equal(
+    response.headers.get("cache-control"),
+    "private, no-store, max-age=0",
+  );
+  assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+  assert.equal(response.headers.get("referrer-policy"), "no-referrer");
+  assert.equal(response.headers.get("x-frame-options"), "DENY");
+  assert.equal(response.headers.get("x-robots-tag"), "noindex, nofollow, noarchive");
+  const csp = response.headers.get("content-security-policy") ?? "";
+  const cspNonce = csp.match(/'nonce-([A-Za-z0-9_-]{22})'/u)?.[1];
+  assert.ok(cspNonce);
+  assert.match(csp, /default-src 'none'/u);
+  assert.match(csp, /frame-ancestors 'none'/u);
+  assert.doesNotMatch(csp, /unsafe-inline|unsafe-eval/u);
 
   const html = await response.text();
+  const scripts = html.match(/<script(?:\s[^>]*)?>/gu) ?? [];
+  assert.ok(scripts.length > 0);
+  for (const script of scripts) {
+    assert.match(script, new RegExp(`\\snonce="${cspNonce}"`, "u"));
+  }
   assert.match(html, /<html[^>]*lang="ja"/iu);
   assert.match(html, /<title>CloudFlare Guard \| DFConnect<\/title>/iu);
   assert.match(html, /data-app="cloudflare-guard"/u);
@@ -78,5 +102,37 @@ test("server-renders the read-only Guard console without presenting remote unkno
 
   await assert.rejects(
     access(new URL("public/_sites-preview", templateRoot)),
+  );
+});
+
+test("worker rejects spoofed console identity before rendering or leaking scope", async () => {
+  const response = await render({
+    url: "https://guard.example/",
+    headers: {
+      "cf-access-jwt-assertion": "self.asserted.token",
+      "cf-access-authenticated-user-email": "attacker@example.test",
+      "x-guard-site-id": "other-site",
+      "x-guard-environment": "staging",
+      authorization: "Bearer secret-canary",
+    },
+    env: {
+      GUARD_SITE_ID: "dfconnect",
+      GUARD_ENVIRONMENT: "production",
+      CONSOLE_AUTH_MODE: "cloudflare-access",
+      CONSOLE_ACCESS_AUDIENCE: "guard-production-audience",
+      CONSOLE_ACCESS_ISSUER: "https://dfconnect.cloudflareaccess.com",
+    },
+  });
+  assert.equal(response.status, 401);
+  assert.equal(
+    response.headers.get("cache-control"),
+    "private, no-store, max-age=0",
+  );
+  assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+  const body = await response.text();
+  assert.equal(body, JSON.stringify({ error: "unauthorized" }));
+  assert.doesNotMatch(
+    body,
+    /attacker|other-site|staging|secret-canary|guard-production-audience/u,
   );
 });

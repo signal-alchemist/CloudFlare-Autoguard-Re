@@ -3,6 +3,19 @@ import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } fr
 import handler from "vinext/server/app-router-entry";
 import { handleCompatGateRequest } from "../lib/http/compat-gate.ts";
 import { handlePostDeployRequest } from "../lib/http/post-deploy.ts";
+import {
+  applyConsoleSecurityHeaders,
+  authorizeConsoleRequest,
+  consoleAccessErrorResponse,
+  createConsoleCspNonce,
+  prepareConsoleHtmlRequest,
+  verifyCloudflareAccessRequest,
+  verifyLocalConsoleRequest,
+  verifySitesPrivateRequest,
+  type ConsoleAccessDecision,
+  type ConsoleEnvironment,
+  type ConsoleIdentityVerifier,
+} from "../lib/http/console-access.ts";
 import { D1PostDeployRepository } from "../lib/repositories/post-deploy.ts";
 import type { D1DatabasePort } from "../lib/repositories/observations.ts";
 import {
@@ -20,6 +33,12 @@ interface Env {
   CMS_GATE_SIGNING_SECRET?: string;
   CMS_POST_DEPLOY_SERVICE_TOKEN?: string;
   CMS_POST_DEPLOY_SIGNING_SECRET?: string;
+  CONSOLE_AUTH_MODE?:
+    | "cloudflare-access"
+    | "sites-private"
+    | "local-development";
+  CONSOLE_ACCESS_AUDIENCE?: string;
+  CONSOLE_ACCESS_ISSUER?: string;
   IMAGES: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {
@@ -42,6 +61,105 @@ const failClosedOperationalState: OperationalStateRepository = {
     return false;
   },
 };
+
+function unavailableConsole(): Response {
+  const decision: ConsoleAccessDecision = {
+    allowed: false,
+    status: 503,
+    code: "service_unavailable",
+  };
+  return consoleAccessErrorResponse(decision);
+}
+
+function consoleEnvironment(
+  value: Env["GUARD_ENVIRONMENT"],
+): ConsoleEnvironment | null {
+  return value === "production" || value === "staging" ? value : null;
+}
+
+async function handleConsoleRequest(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+): Promise<Response> {
+  const url = new URL(request.url);
+  const loopback =
+    url.hostname === "localhost" ||
+    url.hostname === "127.0.0.1" ||
+    url.hostname === "::1";
+  const localMode =
+    loopback &&
+    (env.CONSOLE_AUTH_MODE === undefined ||
+      env.CONSOLE_AUTH_MODE === "local-development");
+  const siteId = env.GUARD_SITE_ID ?? (localMode ? "dfconnect" : undefined);
+  const environment =
+    consoleEnvironment(env.GUARD_ENVIRONMENT) ??
+    (localMode ? "production" : null);
+  const accessAudience =
+    env.CONSOLE_ACCESS_AUDIENCE ??
+    (localMode ? "guard-local-development" : undefined);
+  if (!siteId || environment === null || !accessAudience) {
+    return unavailableConsole();
+  }
+
+  let verifier: ConsoleIdentityVerifier;
+  if (localMode) {
+    verifier = (candidate) =>
+      verifyLocalConsoleRequest(candidate, accessAudience);
+  } else if (env.CONSOLE_AUTH_MODE === "sites-private") {
+    verifier = (candidate) =>
+      verifySitesPrivateRequest(candidate, accessAudience);
+  } else if (
+    env.CONSOLE_AUTH_MODE === "cloudflare-access" &&
+    env.CONSOLE_ACCESS_ISSUER
+  ) {
+    verifier = (candidate) =>
+      verifyCloudflareAccessRequest(candidate, {
+        issuer: env.CONSOLE_ACCESS_ISSUER!,
+        audience: accessAudience,
+      });
+  } else {
+    return unavailableConsole();
+  }
+
+  const scope = { siteId, environment };
+  const decision = await authorizeConsoleRequest(
+    request,
+    {
+      policy: {
+        ...scope,
+        accessAudience,
+      },
+      requestedScope: scope,
+    },
+    verifier,
+  );
+  if (!decision.allowed) return consoleAccessErrorResponse(decision);
+
+  const nonce = createConsoleCspNonce();
+  const securedRequest = prepareConsoleHtmlRequest(request, nonce, scope);
+  let response: Response;
+  if (url.pathname === "/_vinext/image") {
+    const allowedWidths = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES];
+    response = await handleImageOptimization(
+      securedRequest,
+      {
+        fetchAsset: (path) =>
+          env.ASSETS.fetch(new Request(new URL(path, securedRequest.url))),
+        transformImage: async (body, { width, format, quality }) => {
+          const result = await env.IMAGES.input(body)
+            .transform(width > 0 ? { width } : {})
+            .output({ format, quality });
+          return result.response();
+        },
+      },
+      allowedWidths,
+    );
+  } else {
+    response = await handler.fetch(securedRequest, env, ctx);
+  }
+  return applyConsoleSecurityHeaders(response, nonce);
+}
 
 // Image security config. SVG sources with .svg extension auto-skip the
 // optimization endpoint on the client side (served directly, no proxy).
@@ -119,18 +237,7 @@ const worker = {
       });
     }
 
-    if (url.pathname === "/_vinext/image") {
-      const allowedWidths = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES];
-      return handleImageOptimization(request, {
-        fetchAsset: (path) => env.ASSETS.fetch(new Request(new URL(path, request.url))),
-        transformImage: async (body, { width, format, quality }) => {
-          const result = await env.IMAGES.input(body).transform(width > 0 ? { width } : {}).output({ format, quality });
-          return result.response();
-        },
-      }, allowedWidths);
-    }
-
-    return handler.fetch(request, env, ctx);
+    return handleConsoleRequest(request, env, ctx);
   },
 };
 

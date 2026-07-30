@@ -40,3 +40,9 @@ npm run build
 Remote Cloudflare resources, Access audiences, notification destinations, and
 secrets are environment-owned values. They are never guessed or committed.
 
+The console is fail-closed away from loopback. A Cloudflare deployment must
+set `GUARD_SITE_ID`, `GUARD_ENVIRONMENT`, `CONSOLE_AUTH_MODE=cloudflare-access`,
+`CONSOLE_ACCESS_ISSUER`, and `CONSOLE_ACCESS_AUDIENCE`. The Worker validates
+the Access JWT signature, issuer, audience, and lifetime before rendering.
+Production and staging use different deployments and audiences; the rendered
+page receives only the server-fixed environment snapshot.

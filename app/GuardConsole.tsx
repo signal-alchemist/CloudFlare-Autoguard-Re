@@ -1,13 +1,11 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import type {
-  ConsoleEnvironment,
-  DashboardSnapshot,
-} from "../lib/ui/dashboard-model";
+import { useMemo } from "react";
+import type { DashboardSnapshot } from "../lib/ui/dashboard-model";
+import { resolveConsoleReason } from "../lib/ui/console-copy";
 
 interface GuardConsoleProps {
-  snapshots: Readonly<Record<ConsoleEnvironment, DashboardSnapshot>>;
+  snapshot: DashboardSnapshot;
   productName: string;
 }
 
@@ -66,12 +64,10 @@ function SectionHeading({
 }
 
 export function GuardConsole({
-  snapshots,
+  snapshot,
   productName,
 }: GuardConsoleProps) {
-  const [environment, setEnvironment] =
-    useState<ConsoleEnvironment>("production");
-  const snapshot = snapshots[environment];
+  const environment = snapshot.environment;
   const componentCounts = useMemo(
     () =>
       snapshot.components.reduce<Record<string, number>>((counts, item) => {
@@ -133,17 +129,11 @@ export function GuardConsole({
             <BrandMark />
             <strong>{productName}</strong>
           </div>
-          <div className="environment-switch" aria-label="表示環境">
-            {(["production", "staging"] as const).map((item) => (
-              <button
-                key={item}
-                type="button"
-                aria-pressed={environment === item}
-                onClick={() => setEnvironment(item)}
-              >
-                {item === "production" ? "Production" : "Staging"}
-              </button>
-            ))}
+          <div className="environment-switch" aria-label="サーバー固定の表示環境">
+            <span>
+              {environment === "production" ? "Production" : "Staging"}
+            </span>
+            <small>server scoped</small>
           </div>
           <div className="topbar-actions">
             <span className="remote-chip">
@@ -278,7 +268,7 @@ export function GuardConsole({
                   </dl>
                   <details>
                     <summary>判定理由</summary>
-                    <p>{component.reason}</p>
+                    <p>{resolveConsoleReason(component.reasonCode)}</p>
                   </details>
                 </article>
               ))}

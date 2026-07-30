@@ -165,6 +165,17 @@ signal identity dedupeで補う。v2で明示fieldへ移行する。
 Internal routesはAccessまたはservice authentication失敗時にgeneric 401/403を
 返す。header自己申告だけからrole/siteを作らない。
 
+ConsoleのCloudflare Access modeは`Cf-Access-Jwt-Assertion`の存在だけを
+信用せず、Access issuerのJWKSでRS256署名、issuer、audience、有効期限を
+Worker内で検証する。site/environmentはJWTやclient headerから採用せず、
+deployment設定の`GUARD_SITE_ID`と`GUARD_ENVIRONMENT`で固定する。認証後は
+Access JWT、認証email、Cookie、Authorizationをrendererへ渡さない。
+
+HTMLにはrequestごとのnonceを発行し、vinextへ同じCSPをrequest headerで
+渡して全scriptへnonceを付与する。responseは同一nonceのCSP、
+`private, no-store`、frame拒否、no-referrer、nosniff、機能制限、
+noindexを返す。Access失敗responseにも同じ安全headerを付ける。
+
 ## 9. Persistence
 
 - D1: sites、checks、observations、receipts、verdicts、incidents、timeline、
@@ -193,6 +204,12 @@ desktop/mobileで情報順を維持し、状態は色、icon、text labelを併�
 ## 11. Deployment
 
 - production/stagingは別D1/R2/Queue/DLQ/Access audience/secretを使う。
+- Consoleは`CONSOLE_AUTH_MODE=cloudflare-access`、
+  `CONSOLE_ACCESS_ISSUER`、`CONSOLE_ACCESS_AUDIENCE`を必須とする。未設定、
+  JWT失敗、scope不一致はfail-closedとする。
+- owner-only Sites previewは`sites-private` modeを使えるが、Cloudflare
+  Accessの代替ではなく、直origin遮断をremoteで確認するまで本番Access
+  evidenceに数えない。
 - Guard WorkerはCloudflare read-only inventory tokenだけを持つ。
 - CMS deploy/recovery tokenをGuardへ渡さない。
 - stagingでfailure matrixとnotification rehearsal後にproduction shadowへ進む。
@@ -207,4 +224,3 @@ canonical APIと混在させない。consumer-driven testをrelease blockerと�
 
 CMS ops envelope v1にはsiteId/audience/nonce/expiryがない。MVPはcredential
 bindingとfreshness/dedupeでfail-closed補完し、v2 migrationを別Issueで行う。
-
