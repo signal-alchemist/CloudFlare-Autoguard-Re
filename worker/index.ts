@@ -49,12 +49,22 @@ import {
 import {
   runDfconnectScheduledPublicDelivery,
 } from "../lib/services/scheduled-public-delivery.ts";
+import {
+  consumeConfiguredNotificationBatch,
+  dispatchConfiguredPendingNotifications,
+  type NotificationRuntimeEnv,
+} from "./notification.ts";
 
 interface Env {
   ASSETS: Fetcher;
   DB?: D1Database;
   GUARD_SITE_ID?: string;
   GUARD_ENVIRONMENT?: "staging" | "production";
+  NOTIFICATION_QUEUE?: Queue<unknown>;
+  NOTIFICATION_QUEUE_NAME?: string;
+  NOTIFICATION_PROVIDER_ENABLED?: string;
+  NOTIFICATION_PROVIDER_ENDPOINT?: string;
+  NOTIFICATION_PROVIDER_TOKEN?: string;
   CMS_GATE_SERVICE_TOKEN?: string;
   CMS_GATE_SIGNING_SECRET?: string;
   CMS_SIGNAL_SERVICE_TOKEN?: string;
@@ -404,6 +414,28 @@ const worker = {
       configuredEnvironment: env.GUARD_ENVIRONMENT,
       receivedAt: new Date(Date.now()).toISOString(),
     });
+    try {
+      await dispatchConfiguredPendingNotifications(
+        env as unknown as NotificationRuntimeEnv,
+      );
+    } catch {
+      console.error(
+        JSON.stringify({
+          code: "NOTIFICATION_DISPATCH_DEFERRED",
+          producer: "public-delivery",
+        }),
+      );
+    }
+  },
+
+  async queue(
+    batch: MessageBatch<unknown>,
+    env: Env,
+  ): Promise<void> {
+    await consumeConfiguredNotificationBatch(
+      batch,
+      env as unknown as NotificationRuntimeEnv,
+    );
   },
 };
 

@@ -27,6 +27,9 @@ import {
   runDfconnectScheduledPublicDelivery,
   SCHEDULED_PUBLIC_DELIVERY_CRON,
 } from "../../lib/services/scheduled-public-delivery.ts";
+import {
+  dispatchConfiguredPendingNotifications,
+} from "../../worker/notification.ts";
 
 class NodeSqliteStatement implements D1PreparedStatementPort {
   readonly statement: StatementSync;
@@ -642,6 +645,45 @@ test("scheduled FAIL creates one pending notification and a persisted observatio
       `).get() as Record<string, number>),
     },
     { incidents: 1, timeline: 1, outbox: 1 },
+  );
+  const missingQueue = await dispatchConfiguredPendingNotifications({
+    DB: port,
+    GUARD_SITE_ID: "dfconnect",
+    GUARD_ENVIRONMENT: "production",
+  });
+  assert.deepEqual(missingQueue, {
+    selected: 0,
+    enqueued: 0,
+    blocked: 0,
+    retainedPending: 0,
+  });
+  const failedQueue = await dispatchConfiguredPendingNotifications({
+    DB: port,
+    GUARD_SITE_ID: "dfconnect",
+    GUARD_ENVIRONMENT: "production",
+    NOTIFICATION_QUEUE: {
+      async send() {
+        throw new Error("CANARY_QUEUE_SEND_FAILURE");
+      },
+    },
+  });
+  assert.deepEqual(failedQueue, {
+    selected: 1,
+    enqueued: 0,
+    blocked: 0,
+    retainedPending: 1,
+  });
+  assert.deepEqual(
+    {
+      ...(sqlite.prepare(`
+        SELECT
+          (SELECT status FROM notification_outbox LIMIT 1) outboxStatus,
+          (SELECT status FROM observations
+            WHERE check_id = 'guard.scheduler.public_delivery'
+            LIMIT 1) heartbeatStatus
+      `).get() as Record<string, string>),
+    },
+    { outboxStatus: "pending", heartbeatStatus: "pass" },
   );
 
   sqlite.exec("DELETE FROM notification_outbox");

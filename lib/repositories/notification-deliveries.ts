@@ -46,7 +46,10 @@ function validateMarker(
   if (!/^[a-f0-9]{64}$/u.test(marker.payloadDigest)) {
     invalid("notification_payload_digest_invalid");
   }
-  if (!/^http_[2-5][0-9]{2}$/u.test(marker.providerCode)) {
+  if (
+    marker.providerCode !== "http_2xx" &&
+    !/^http_2[0-9]{2}$/u.test(marker.providerCode)
+  ) {
     invalid("notification_provider_code_invalid");
   }
   const deliveredAt = Date.parse(marker.deliveredAt);
@@ -101,7 +104,7 @@ export class D1NotificationDeliveryRepository
       )
       .bind(deliveryKey)
       .first<NotificationDeliveryRow>();
-    return row ? fromRow(row) : null;
+    return row ? validateMarker(fromRow(row)) : null;
   }
 
   async record(

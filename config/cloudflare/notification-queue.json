@@ -1,9 +1,27 @@
 {
   "schema": "guard-notification-queue-plan-v1",
-  "provisioningStatus": "planned",
+  "provisioningStatus": "remote-unprovisioned",
+  "localRuntimeStatus": "ready",
   "queue": "cloudflare-guard-notifications",
+  "bindings": {
+    "producer": "NOTIFICATION_QUEUE",
+    "consumerQueueName": "NOTIFICATION_QUEUE_NAME"
+  },
   "consumer": {
+    "max_batch_size": 10,
+    "max_batch_timeout": 5,
     "max_retries": 3,
     "dead_letter_queue": "cloudflare-guard-notifications-dlq"
+  },
+  "provider": {
+    "enabled": "NOTIFICATION_PROVIDER_ENABLED",
+    "endpoint": "NOTIFICATION_PROVIDER_ENDPOINT",
+    "tokenSecret": "NOTIFICATION_PROVIDER_TOKEN",
+    "timeoutMs": 5000
+  },
+  "sitesGeneratedBinding": "absent",
+  "remoteEvidence": {
+    "staging": "NOT_RUN",
+    "production": "NOT_RUN"
   }
 }

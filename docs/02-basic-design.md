@@ -331,6 +331,73 @@ resolved Incidentと同じfingerprintの新しいFAILは、resolved stateを
 解決済みでopening timelineだけが存在するIncidentは、新たな遅延通知を送らず
 `incident_resolved_before_outbox`の`blocked` rowを作ってrepair対象から外す。
 
+### 7.5 Notification dispatch and reviewed HTTP provider
+
+Issue #29は既存`notification_outbox`と`notification_deliveries`を利用し、
+新しいmigrationを追加しない。scheduled cycleはpublic-delivery producerの
+Observation、Incident reconciliation、PASS heartbeat保存を先に完了し、その後に
+通知dispatchをbest-effortで試す。Queue binding欠損、Queue send失敗、outbox
+scan/CAS障害は通知を遅延させるが、完了済みのpublic監視結果を失敗へ書き換えない。
+
+```text
+scheduled public producer + persisted heartbeat
+  -> scoped pending scan (created_at/outbox_id, max 10)
+  -> canonical envelope + SHA-256 digest + server scope verification
+       ├─ corrupt: blocked / notification_outbox_payload_invalid
+       └─ valid: Queue.send(envelope object, contentType=json)
+                    -> exact snapshot CAS pending -> enqueued
+
+configured Queue consumer
+  -> expected batch.queue + server scope
+  -> exact local outbox + Incident + source FAIL Observation authorization
+  -> reviewed HTTPS provider POST (5 s, manual redirect, no body read)
+       ├─ 2xx -> D1 http_2xx marker -> ACK
+       ├─ 429 / 5xx / timeout -> bounded retry
+       └─ 3xx / other 4xx / invalid / conflict -> poison retry -> DLQ
+```
+
+pending scanはIncident join内で`site_id/environment`をSQL条件に固定し、別scope
+rowが先頭にあっても自身の最大10件を選ぶ。Queue送信前に
+`compileNotificationDelivery`でbodyを再canonical化し、保存body/digest、
+incident ID、site/environmentを照合する。破損内容や例外は返さず、固定reason
+だけを保存する。
+
+Queue送信後の状態変更はoutbox ID、Incident、Observation、kind、body、digest、
+created/updated timestamp、`status='pending'`、`enqueued_at IS NULL`、
+`last_error_code IS NULL`とserver scopeを比較するCASとする。0件更新は、同じ
+snapshotが既に同一terminal stateへ遷移済みと再照合できた場合だけ冪等成功と
+し、それ以外をconflictとしてpending相当の再試行へ残す。
+timestampやpending NULL不変条件自体が既に破損したrowは送信CASへ渡さず、
+raw snapshot全fieldとserver scopeを比較する隔離専用CASで固定blocked codeへ
+収束させる。最古の破損rowを理由に同じscan内の後続valid rowを停止しない。
+
+consumer authorizationはQueue payloadの形式検証だけに依存しない。canonical
+body/digestと`outbox:<incident>:incident_opened`をlocal D1で検索し、statusが
+pending/enqueued、Incidentのcomponent/reason/scope/severity/openedAt、および
+source FAIL Observationのsite/environment/component/reason/scope/evidence/
+observedAt/correlationがenvelopeと一致することをproviderより先に確認する。
+同じscopeらしく見えるfabricated messageや別environmentのmessageも送信しない。
+
+HTTP providerは`NOTIFICATION_PROVIDER_ENABLED`が文字列`true`のときだけ作る。
+endpoint/tokenは`NOTIFICATION_PROVIDER_ENDPOINT`とsecret
+`NOTIFICATION_PROVIDER_TOKEN`から読み、client/Queue/D1へ保存しない。endpoint
+はoperator review済みのHTTPS URL 1件とし、IP literal、localhost、userinfo、
+query、fragment、control character、非default portを拒否する。redirectは
+manualのためcredentialを別originへ追従送信しない。responseからはstatusと
+1〜9桁のnumeric Retry-Afterだけを採用し、bodyは読まない。
+
+Queue consumerは`NOTIFICATION_QUEUE_NAME`とruntimeの`batch.queue`を一致させる。
+DB、site/environment、Queue名、enable/endpoint/tokenの欠損・不正、および
+別Queue batchは5秒delayでbatch全体をretryし、message単位ACK/retryやprovider
+呼出をしない。Cloudflare側の`max_retries=3`と専用DLQで最終隔離する。
+
+checked-in queue planはlocal runtimeをready、remote resourceを
+`remote-unprovisioned`、staging/production evidenceを`NOT_RUN`と明記する。
+Sitesが生成する`dist/server/wrangler.json`にQueue bindingは現時点で無く、
+存在を偽装しない。stagingとproductionのQueue/DLQを別々に作成し、producer
+binding、consumer、secretを設定してrehearsalを完了した後だけexplicit enable
+する。
+
 ## 8. API
 
 | Method/path | 用途 |
@@ -412,6 +479,10 @@ navigationを出し、`REMOTE NOT RUN`やfreshnessを小画面でも非表示に
 - checked-in Worker configは`* * * * *` Cron、`nodejs_compat`、environment別
   D1 bindingを持つ。build artifactのtriggerをrelease contractで検査し、
   remoteで実発火とheartbeat freshnessを確認するまでCronをPASS扱いしない。
+- notification Queue/DLQ/providerはproduction/stagingで分離し、
+  `NOTIFICATION_QUEUE`、`NOTIFICATION_QUEUE_NAME`、provider 3変数を設定する。
+  generated Sites packageにQueue bindingが無い間はoutboxをpendingに保ち、
+  remote resourceをready/PASSと表示しない。
 
 ## 12. 既存CMSとの不整合と方針
 

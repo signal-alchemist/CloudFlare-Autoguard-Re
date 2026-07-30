@@ -31,6 +31,16 @@ test("private Sites release package has an opaque project binding and complete r
   assert.deepEqual(wrangler.triggers?.crons, ["* * * * *"]);
   assert.ok(wrangler.compatibility_flags?.includes("nodejs_compat"));
   assert.equal(wrangler.d1_databases?.[0]?.binding, "DB");
+  assert.deepEqual(
+    wrangler.queues?.producers ?? [],
+    [],
+    "generated Sites package must not claim an unprovisioned producer binding",
+  );
+  assert.deepEqual(
+    wrangler.queues?.consumers ?? [],
+    [],
+    "generated Sites package must not claim an unprovisioned consumer binding",
+  );
   await access(new URL("worker/index.ts", root));
   await access(new URL("public/og.png", root));
 
@@ -90,6 +100,24 @@ test("private Sites release package has an opaque project binding and complete r
   assert.match(worker, /service_unavailable/u);
   assert.match(worker, /async scheduled/u);
   assert.match(worker, /runDfconnectScheduledPublicDelivery/u);
+  assert.match(worker, /async queue/u);
+  assert.match(worker, /consumeConfiguredNotificationBatch/u);
+  assert.match(worker, /dispatchConfiguredPendingNotifications/u);
+  assert.match(worker, /NOTIFICATION_QUEUE_NAME/u);
+  assert.match(worker, /NOTIFICATION_PROVIDER_ENABLED/u);
+  assert.match(worker, /NOTIFICATION_PROVIDER_ENDPOINT/u);
+  assert.match(worker, /NOTIFICATION_PROVIDER_TOKEN/u);
+  const publicProducer = worker.indexOf(
+    "await runDfconnectScheduledPublicDelivery",
+  );
+  const notificationDispatch = worker.indexOf(
+    "await dispatchConfiguredPendingNotifications",
+    publicProducer,
+  );
+  assert.ok(
+    publicProducer >= 0 && notificationDispatch > publicProducer,
+    "notification dispatch must remain best-effort after public persistence",
+  );
   assert.match(worker, /CMS_MAINTENANCE_SERVICE_TOKEN/u);
   assert.match(worker, /CMS_MAINTENANCE_SIGNING_SECRET/u);
   assert.match(worker, /selectMaintenanceCredentialPair/u);
@@ -138,4 +166,45 @@ test("private Sites release package has an opaque project binding and complete r
     failureOperation,
     /\.send\s*\(|\bfetch\s*\(|\.enqueue\s*\(/u,
   );
+
+  const queuePlan = JSON.parse(
+    await readFile(
+      new URL("config/cloudflare/notification-queue.json", root),
+      "utf8",
+    ),
+  );
+  assert.equal(queuePlan.provisioningStatus, "remote-unprovisioned");
+  assert.equal(queuePlan.localRuntimeStatus, "ready");
+  assert.equal(queuePlan.sitesGeneratedBinding, "absent");
+  assert.deepEqual(queuePlan.remoteEvidence, {
+    staging: "NOT_RUN",
+    production: "NOT_RUN",
+  });
+  assert.equal(queuePlan.bindings.producer, "NOTIFICATION_QUEUE");
+  assert.equal(
+    queuePlan.bindings.consumerQueueName,
+    "NOTIFICATION_QUEUE_NAME",
+  );
+
+  const notificationWorker = await readFile(
+    new URL("worker/notification.ts", root),
+    "utf8",
+  );
+  const dispatcher = await readFile(
+    new URL("lib/services/notification-dispatcher.ts", root),
+    "utf8",
+  );
+  const provider = await readFile(
+    new URL("lib/adapters/http-notification-provider.ts", root),
+    "utf8",
+  );
+  assert.match(notificationWorker, /batch\.queue !== expectedQueue/u);
+  assert.match(notificationWorker, /retryEntireBatch/u);
+  assert.match(dispatcher, /NOTIFICATION_DISPATCH_LIMIT/u);
+  assert.match(dispatcher, /contentType: "json"/u);
+  assert.match(provider, /url\.protocol !== "https:"/u);
+  assert.match(provider, /url\.port !== ""/u);
+  assert.match(provider, /redirect: "manual"/u);
+  assert.match(provider, /request\.timeoutMs !== 5_000/u);
+  assert.doesNotMatch(provider, /response\.(?:text|json|arrayBuffer)\s*\(/u);
 });

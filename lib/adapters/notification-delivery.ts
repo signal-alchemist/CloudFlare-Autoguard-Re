@@ -1,4 +1,6 @@
 import { compileNotificationDelivery } from "../contracts/notifications.ts";
+import type { Environment } from "../contracts/ops-signal.ts";
+import type { SafeNotificationEnvelope } from "../security/safe-output.ts";
 
 export interface NotificationDeliveryMarker {
   deliveryKey: string;
@@ -25,7 +27,7 @@ export interface NotificationProviderRequest {
 
 export interface NotificationProviderResponse {
   status: number;
-  retryAfter?: string;
+  retryAfterSeconds?: number;
 }
 
 export interface NotificationProviderPort {
@@ -41,9 +43,22 @@ export interface QueueMessagePort {
   retry(options: { delaySeconds: number }): void;
 }
 
+export interface NotificationDeliveryAuthorizationRepository {
+  authorizeDelivery(input: {
+    envelope: SafeNotificationEnvelope;
+    payloadJson: string;
+    payloadDigest: string;
+  }): Promise<boolean>;
+}
+
 export interface NotificationDeliveryDependencies {
   provider: NotificationProviderPort;
   repository: NotificationDeliveryRepository;
+  outbox: NotificationDeliveryAuthorizationRepository;
+  scope: {
+    siteId: string;
+    environment: Environment;
+  };
   clock(): number;
 }
 
@@ -60,6 +75,9 @@ export interface NotificationDeliveryOutcome {
     | "notification_marker_write_failed"
     | "notification_payload_invalid"
     | "notification_idempotency_conflict"
+    | "notification_scope_invalid"
+    | "notification_outbox_unauthorized"
+    | "notification_outbox_authorization_failed"
     | "notification_provider_rejected";
   delaySeconds?: number;
 }
@@ -72,9 +90,15 @@ function exponentialDelay(attempts: number): number {
   return Math.min(300, 5 * 2 ** (safeAttempts - 1));
 }
 
-function retryAfterSeconds(value: string | undefined): number | null {
-  if (value === undefined || !/^[0-9]{1,9}$/u.test(value)) return null;
-  return Math.max(1, Math.min(300, Number(value)));
+function retryAfterSeconds(value: number | undefined): number | null {
+  if (
+    value === undefined ||
+    !Number.isSafeInteger(value) ||
+    value < 0
+  ) {
+    return null;
+  }
+  return Math.max(1, Math.min(300, value));
 }
 
 function scheduleRetry(
@@ -107,6 +131,38 @@ export async function processNotificationMessage(
       true,
     );
   }
+  if (
+    compiled.envelope.siteId !== dependencies.scope.siteId ||
+    compiled.envelope.environment !== dependencies.scope.environment
+  ) {
+    return scheduleRetry(
+      message,
+      "notification_scope_invalid",
+      true,
+    );
+  }
+
+  let authorized: boolean;
+  try {
+    authorized = await dependencies.outbox.authorizeDelivery({
+      envelope: compiled.envelope,
+      payloadJson: compiled.body,
+      payloadDigest: compiled.payloadDigest,
+    });
+  } catch {
+    return scheduleRetry(
+      message,
+      "notification_outbox_authorization_failed",
+      false,
+    );
+  }
+  if (!authorized) {
+    return scheduleRetry(
+      message,
+      "notification_outbox_unauthorized",
+      true,
+    );
+  }
 
   let existing: NotificationDeliveryMarker | null;
   try {
@@ -121,7 +177,10 @@ export async function processNotificationMessage(
     );
   }
   if (existing) {
-    if (existing.payloadDigest !== compiled.payloadDigest) {
+    if (
+      existing.payloadDigest !== compiled.payloadDigest ||
+      existing.incidentId !== compiled.envelope.incidentId
+    ) {
       return scheduleRetry(
         message,
         "notification_idempotency_conflict",
@@ -175,7 +234,7 @@ export async function processNotificationMessage(
         deliveryKey: compiled.envelope.deliveryKey,
         incidentId: compiled.envelope.incidentId,
         payloadDigest: compiled.payloadDigest,
-        providerCode: `http_${response.status}`,
+        providerCode: "http_2xx",
         deliveredAt: new Date(now).toISOString(),
         correlationId: compiled.envelope.correlationId,
       });
@@ -198,7 +257,7 @@ export async function processNotificationMessage(
       "notification_provider_retryable",
       false,
       response.status === 429
-        ? retryAfterSeconds(response.retryAfter)
+        ? retryAfterSeconds(response.retryAfterSeconds)
         : null,
     );
   }

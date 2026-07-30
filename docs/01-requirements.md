@@ -102,8 +102,29 @@ missing/stale/invalid、またはactive freezeがある場合はdenyとする。
 ### GRD-F-006 通知
 
 - CMS contact通知と別Queue/DLQ/credentialを使う。
-- provider 2xx後だけdelivery markerを保存する。
-- 429/5xx/timeoutはbounded retryし、上限後DLQへ送る。
+- schedulerは自身のsite/environmentに属する`pending` outboxだけを、1回最大
+  10件、作成順で選ぶ。Queue bindingが無い場合はscanも状態変更もせず、
+  public probeとPASS heartbeatを壊さない。
+- canonical payload/digest/scopeを再検証し、破損rowは固定された安全なreasonで
+  `blocked`にする。QueueへのJSON object送信完了後だけ、選択時snapshotと
+  pending不変条件を比較するCASで`enqueued`へ進める。send/CAS失敗は
+  `pending`に残す。
+- consumerはWorkerに固定したsite/environment、期待Queue名、およびlocal D1
+  outboxのincident、source Observation、canonical body/digest、pending/enqueued
+  状態が完全一致するmessageだけをproviderへ渡す。fabricated、別scope、
+  payload差替え、別Queueはprovider/marker/ACKへ進めない。
+- providerは明示enable、環境変数だけのreview済みHTTPS endpointとsecretを
+  必須とし、userinfo/query/fragment/CRLF/IP/localhost/非default portを拒否する。
+  canonical JSONを5秒timeout、manual redirect、no-storeでPOSTし、response
+  bodyを読取・保存・logしない。
+- provider 2xx後だけ`http_2xx` delivery markerをD1へ保存し、その保存後だけ
+  Queue messageをACKする。既存markerはincident/digestが一致するときだけ
+  restart-safeな成功としてACKする。
+- 429/5xx/timeoutはbounded retryし、numeric Retry-Afterだけを最大300秒で採用
+  する。3xx、その他4xx、invalid response、scope/outbox/idempotency conflictは
+  poison retryとして上限後DLQへ送る。
+- DB、scope、Queue名、provider設定のいずれかが欠けるbatchはproviderを呼ばず
+  batch全体を明示retryする。
 - 通知経路停止は独立したout-of-band monitorで検知する。
 
 ### GRD-F-007 API
@@ -199,6 +220,9 @@ canonical APIへ分離する。
 - structured logへcorrelation IDを持たせ、secret/PIIを出さない。
 - 通知outboxへは`safe-notification-envelope-v1`のcanonical JSONとdigestだけを
   保存し、raw signal、受信severity、provider payloadを保存しない。
+- Queueへstring化済みraw bodyではなく検証済みenvelope objectをJSON content
+  typeで渡す。provider token、endpoint query、response body、例外本文を
+  D1、Queue payload、結果object、structured logへ出さない。
 
 ## 6. 明示的な対象外
 
