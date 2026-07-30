@@ -163,6 +163,52 @@ class SelectiveFailingD1 implements D1DatabasePort {
   }
 }
 
+class RejectingOutboxStatement implements D1PreparedStatementPort {
+  readonly inner: D1PreparedStatementPort;
+  readonly sql: string;
+
+  constructor(inner: D1PreparedStatementPort, sql: string) {
+    this.inner = inner;
+    this.sql = sql;
+  }
+
+  bind(...values: unknown[]): D1PreparedStatementPort {
+    return new RejectingOutboxStatement(
+      this.inner.bind(...values),
+      this.sql,
+    );
+  }
+
+  first<T>(): Promise<T | null> {
+    return this.inner.first<T>();
+  }
+
+  run(): Promise<D1RunResult> {
+    if (this.sql.includes("INTO notification_outbox")) {
+      return Promise.reject(new Error("simulated_outbox_write_failure"));
+    }
+    return this.inner.run();
+  }
+}
+
+class RejectingOutboxD1 implements D1DatabasePort {
+  readonly base: NodeSqliteD1;
+
+  constructor(base: NodeSqliteD1) {
+    this.base = base;
+  }
+
+  prepare(sql: string): D1PreparedStatementPort {
+    return new RejectingOutboxStatement(this.base.prepare(sql), sql);
+  }
+
+  batch(
+    statements: readonly D1PreparedStatementPort[],
+  ): Promise<D1RunResult[]> {
+    return this.base.batch(statements);
+  }
+}
+
 async function database(): Promise<{
   sqlite: DatabaseSync;
   port: NodeSqliteD1;
@@ -439,6 +485,18 @@ function healthyScheduledExchange(
   return response({ status, headers, body });
 }
 
+function onePublicFailureExchange(
+  request: PublicDeliveryWorkerExchangeRequest,
+): PublicDeliveryWorkerExchangeResult {
+  if (
+    request.method === "GET" &&
+    request.url === "https://dfconnect.jp/"
+  ) {
+    return response({ status: 418 });
+  }
+  return healthyScheduledExchange(request);
+}
+
 test("scheduled producer stores only the checked-in manifest, is bounded/idempotent, and writes heartbeat last with the correct actor", async () => {
   const { sqlite, port } = await database();
   let active = 0;
@@ -547,6 +605,109 @@ test("scheduled producer stores only the checked-in manifest, is bounded/idempot
       ).get() as { count: number }
     ).count,
     manifest.checks.length + 1,
+  );
+  sqlite.close();
+});
+
+test("scheduled FAIL creates one pending notification and a persisted observation repairs without re-probing", async () => {
+  const { sqlite, port } = await database();
+  let exchanges = 0;
+  const input = {
+    database: port as D1DatabasePort,
+    ports: workerPorts((request) => {
+      exchanges += 1;
+      return onePublicFailureExchange(request);
+    }),
+    scheduledTime: scheduledTime + 120_000,
+    cron: SCHEDULED_PUBLIC_DELIVERY_CRON,
+    configuredSiteId: "dfconnect",
+    configuredEnvironment: "production" as const,
+    receivedAt: "2026-07-31T04:02:02.000Z",
+  };
+  const first = await runDfconnectScheduledPublicDelivery(input);
+  assert.equal(
+    first.targetObservations.filter(
+      (observation) => observation.status === "fail",
+    ).length,
+    1,
+  );
+  assert.equal(first.heartbeat.status, "pass");
+  assert.deepEqual(
+    {
+      ...(sqlite.prepare(`
+        SELECT
+          (SELECT COUNT(*) FROM incidents) incidents,
+          (SELECT COUNT(*) FROM incident_timeline) timeline,
+          (SELECT COUNT(*) FROM notification_outbox) outbox
+      `).get() as Record<string, number>),
+    },
+    { incidents: 1, timeline: 1, outbox: 1 },
+  );
+
+  sqlite.exec("DELETE FROM notification_outbox");
+  sqlite.exec("DELETE FROM incident_timeline");
+  sqlite.exec("DELETE FROM incidents");
+  exchanges = 0;
+  const repaired = await runDfconnectScheduledPublicDelivery(input);
+  assert.equal(repaired.heartbeat.status, "pass");
+  assert.equal(exchanges, 0);
+  assert.deepEqual(
+    {
+      ...(sqlite.prepare(`
+        SELECT
+          (SELECT COUNT(*) FROM incidents) incidents,
+          (SELECT COUNT(*) FROM incident_timeline) timeline,
+          (SELECT COUNT(*) FROM notification_outbox) outbox
+      `).get() as Record<string, number>),
+    },
+    { incidents: 1, timeline: 1, outbox: 1 },
+  );
+  sqlite.close();
+});
+
+test("scheduled notification reconciliation failure preserves the FAIL observation and prevents a passing heartbeat", async () => {
+  const { sqlite, port } = await database();
+  const failureTime = scheduledTime + 180_000;
+  await assert.rejects(
+    runDfconnectScheduledPublicDelivery({
+      database: new RejectingOutboxD1(port),
+      ports: workerPorts(onePublicFailureExchange),
+      scheduledTime: failureTime,
+      cron: SCHEDULED_PUBLIC_DELIVERY_CRON,
+      configuredSiteId: "dfconnect",
+      configuredEnvironment: "production",
+      receivedAt: "2026-07-31T04:03:02.000Z",
+    }),
+    /scheduled_cycle_incomplete/u,
+  );
+  assert.equal(
+    (
+      sqlite.prepare(`
+        SELECT COUNT(*) count
+        FROM observations
+        WHERE status = 'fail'
+      `).get() as { count: number }
+    ).count,
+    1,
+  );
+  assert.deepEqual(
+    {
+      ...(sqlite.prepare(`
+        SELECT
+          (SELECT COUNT(*) FROM incidents) incidents,
+          (SELECT COUNT(*) FROM incident_timeline) timeline,
+          (SELECT COUNT(*) FROM notification_outbox) outbox,
+          (SELECT COUNT(*) FROM observations
+            WHERE check_id = 'guard.scheduler.public_delivery'
+              AND status = 'pass') passingHeartbeats
+      `).get() as Record<string, number>),
+    },
+    {
+      incidents: 0,
+      timeline: 0,
+      outbox: 0,
+      passingHeartbeats: 0,
+    },
   );
   sqlite.close();
 });

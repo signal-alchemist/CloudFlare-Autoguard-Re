@@ -10,6 +10,7 @@ import {
   D1ObservationRepository,
   type D1DatabasePort,
 } from "../repositories/observations.ts";
+import { D1IncidentRepository } from "../repositories/incidents.ts";
 import { sha256Hex } from "../security/safe-output.ts";
 import {
   stableJson,
@@ -246,6 +247,7 @@ async function observeAndPersist(
   manifest: PublicDeliveryManifest,
   check: PublicDeliveryCheck,
   repository: D1ObservationRepository,
+  incidentRepository: D1IncidentRepository,
   input: RunDfconnectScheduledPublicDeliveryInput,
   correlationId: string,
 ): Promise<Observation> {
@@ -260,6 +262,9 @@ async function observeAndPersist(
       check,
       input.scheduledTime,
       correlationId,
+    );
+    await incidentRepository.recordFailureAndPendingNotification(
+      existing,
     );
     return existing;
   }
@@ -279,7 +284,13 @@ async function observeAndPersist(
     input.scheduledTime,
     correlationId,
   );
-  return (await repository.record(observation, input.receivedAt)).observation;
+  const persisted = (
+    await repository.record(observation, input.receivedAt)
+  ).observation;
+  await incidentRepository.recordFailureAndPendingNotification(
+    persisted,
+  );
+  return persisted;
 }
 
 export async function runDfconnectScheduledPublicDelivery(
@@ -290,6 +301,7 @@ export async function runDfconnectScheduledPublicDelivery(
     input.database,
     scheduledAuditContext,
   );
+  const incidentRepository = new D1IncidentRepository(input.database);
   const manifest = await compileReviewedManifest(repository, input);
   if (
     input.cron !== SCHEDULED_PUBLIC_DELIVERY_CRON ||
@@ -308,6 +320,25 @@ export async function runDfconnectScheduledPublicDelivery(
   }
 
   const correlationId = runCorrelationId(input.scheduledTime);
+  try {
+    await incidentRepository.repairMissingFailureNotifications({
+      siteId: manifest.siteId,
+      environment: manifest.environment,
+    });
+  } catch {
+    try {
+      await persistHeartbeat(
+        repository,
+        input,
+        "unknown",
+        "scheduled_cycle_incomplete",
+      );
+    } catch {
+      // A failed D1 binding cannot persist its own outage. The handler still
+      // rejects so the missing heartbeat remains externally detectable.
+    }
+    throw new Error("scheduled_cycle_incomplete");
+  }
   const attempted = await mapWithConcurrency(
     manifest.checks,
     SCHEDULED_PUBLIC_DELIVERY_MAX_CONCURRENCY,
@@ -316,6 +347,7 @@ export async function runDfconnectScheduledPublicDelivery(
         manifest,
         check,
         repository,
+        incidentRepository,
         input,
         correlationId,
       ),

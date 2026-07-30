@@ -273,6 +273,64 @@ audit evidenceとして残す。このAPIはactivate-onlyであり、release/unf
 override endpoint、repository method、AI toolを提供しない。将来の人間による
 期限前解除は別Issue、別強認証、別auditとする。
 
+### 7.4 FAIL Incident reconciliation and notification outbox
+
+Incident化の入口は保存済みObservationだけとし、判定条件を
+`observation.status === "fail"`に固定する。受信signalの`severity`は
+Incidentへ渡さない。checked-in `incident-severity-v1`は自動SEV-1を禁止し、
+次の初期値を返す。
+
+| Scope/component | Severity |
+|---|---|
+| stagingの全component | `sev3` |
+| productionのpublic delivery/contact intake/notification delivery/deployment integrity/control plane | `sev2` |
+| productionのeditorial/media/recovery readiness | `sev3` |
+
+```text
+persisted FAIL Observation
+  -> server severity + canonical incident fingerprint
+  -> D1 one batch
+       ├─ Incident (fingerprint unique)
+       ├─ observation_recorded timeline
+       └─ sanitized pending notification_outbox
+  -> no Queue/provider call in Issue #28
+```
+
+唯一の書込操作は`recordFailureAndPendingNotification`とし、従来の
+`recordFailure`の後から別batchでoutboxを足す呼出は禁止する。
+`notification_outbox`はIncidentとsource Observationへrestrictive foreign keyを
+持ち、`UNIQUE(incident_id, notification_kind)`で`incident_opened`を1件に固定
+する。statusは`pending | enqueued | blocked`、pending scan indexは
+`status/created_at/outbox_id`とする。payloadは
+`toSafeNotification`から`compileNotificationDelivery`したcanonical JSONと
+SHA-256 digestだけを保持する。
+
+同じObservationの再処理はIncident/timeline/outboxを増やさない。同じ
+fingerprintの別FAILはtimelineだけを増やし、既存outboxのsource evidenceと
+payloadを維持する。Incident stateが後から変わっても同じoutbox keyのpayloadを
+再計算しない。row、timeline、payload/digestの不一致は上書きせずcorruption
+としてfail-closedにする。
+
+CMSの初回acceptedとfresh-envelopeによるObservation duplicateの両方で
+reconcileする。reconcile失敗はObservation receiptを取り消さずgeneric `503`を
+返し、次のfresh retryで欠損を修復する。raw bodyが同一のreplayは従来どおり
+`409`であり、fresh-envelope duplicate `200`とは区別する。
+
+scheduled producerは新規・既存の各FAILをreconcileした後だけcycleを完了する。
+reconcile失敗時は可能なら`scheduled_cycle_incomplete` UNKNOWN heartbeatを
+残し、PASS heartbeatを作らない。各cycle開始時に、timelineまたはoutboxが
+欠けた保存済みFAILを最大32件repairするため、CMS retry喪失後も回復できる。
+repairはWorkerに固定されたsite/environmentだけを対象とし、Observationの
+`site_id/environment/status/created_at/observation_id`複合indexを使う。
+誤って共有されたD1でも別scopeへ書き込まない。
+
+resolved Incidentと同じfingerprintの新しいFAILは、resolved stateを
+`incident_opened`として通知し直さない。episode ID、reopen transition、
+通知kind/idempotencyの契約は別Issueで定義し、それまでは
+`incident_reopen_required`でfail-closedにする。migration `0007`より前に
+解決済みでopening timelineだけが存在するIncidentは、新たな遅延通知を送らず
+`incident_resolved_before_outbox`の`blocked` rowを作ってrepair対象から外す。
+
 ## 8. API
 
 | Method/path | 用途 |
@@ -307,8 +365,8 @@ noindexを返す。Access失敗responseにも同じ安全headerを付ける。
 
 - D1: sites、checks、observations、receipts、component verdicts、
   deployment runtime identities、post-deploy requests/receipts、incidents、
-  timeline、maintenance requests/receipts/freeze links、freezes、jobs、
-  outbox/inbox、audit
+  timeline、notification outbox、maintenance requests/receipts/freeze
+  links、freezes、jobs、outbox/inbox、audit
 - private R2: failure screenshot等のlarge sanitized evidence
 - Queue/DLQ: check jobとalert deliveryを分離
 

@@ -9,6 +9,7 @@ import {
   D1ReplayStore,
   type D1DatabasePort,
 } from "../repositories/observations.ts";
+import { D1IncidentRepository } from "../repositories/incidents.ts";
 
 const maximumBodyBytes = 64 * 1_024;
 
@@ -149,6 +150,13 @@ export async function handleCmsSignalRequest(
     const receipt = await new D1ObservationRepository(
       dependencies.database,
     ).record(verified.observation, new Date(now).toISOString());
+    try {
+      await new D1IncidentRepository(
+        dependencies.database,
+      ).recordFailureAndPendingNotification(receipt.observation);
+    } catch {
+      throw new Error("cms_failure_reconciliation_failed");
+    }
     return json(
       {
         schema: "cms-signal-receipt-v1",

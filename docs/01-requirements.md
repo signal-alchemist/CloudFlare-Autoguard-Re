@@ -162,6 +162,30 @@ canonical APIへ分離する。
 - このendpointはactivate-onlyとし、AI用または無認証の解除・延長・overrideを
   提供しない。
 
+### GRD-F-012 FAIL Incident化と通知outbox
+
+- 永続化済みObservationのうち、statusが厳密に`fail`のrecordだけをIncident化
+  する。`pass | degraded | unknown | unsupported`およびmaintenance状態からは
+  Incident、timeline、通知outboxを作らない。
+- severityは受信値を信用せず、version管理されたserver policyから決定する。
+  自動判定でSEV-1を作らず、productionの公開・受付・通知・deploy・control
+  plane failureはSEV-2、その他とstagingはSEV-3を初期値とする。
+- Incident、Observation timeline、sanitizedな`pending`通知outboxをD1の単一
+  batchで保存する。途中失敗では3者をrollbackし、Observationを再試行可能な
+  状態で残す。
+- 同じObservationの再処理は増殖させない。同じfingerprintの新しいFAILは
+  timelineだけを追加し、`incident_opened`通知はIncidentごとに1件とする。
+- CMS accepted/duplicateとscheduled public observationの両方でreconcileする。
+  CMS reconcile失敗はgeneric `503`、scheduled失敗はcycle incompleteとして
+  PASS heartbeatを残さない。
+- schedulerは自身のsite/environmentに限り、Incident/timeline/outboxが欠けた
+  永続FAILを索引付きscanで1 cycle最大32件までrepairする。別scopeのrecordは
+  共有・誤binding時にも変更しない。Queue enqueue、provider呼出、delivery
+  状態更新は別Issueとする。
+- resolved Incidentと同じfingerprintの新しいFAILは、episode/reopen policyが
+  定義されるまで新規通知を作らずfail-closedにする。migration前に解決済みの
+  opening evidenceは遅延通知せず`blocked` outboxとして収束させる。
+
 ## 5. 非機能・セキュリティ要件
 
 - contact name/email/body/IP、Cookie、Authorization、Turnstile token、
@@ -173,6 +197,8 @@ canonical APIへ分離する。
 - normal Observationは90日、resolved incidentは365日を初期保持値とする。
 - critical public failureの目標MTTDは3分、post-deploy判定は5分以内とする。
 - structured logへcorrelation IDを持たせ、secret/PIIを出さない。
+- 通知outboxへは`safe-notification-envelope-v1`のcanonical JSONとdigestだけを
+  保存し、raw signal、受信severity、provider payloadを保存しない。
 
 ## 6. 明示的な対象外
 

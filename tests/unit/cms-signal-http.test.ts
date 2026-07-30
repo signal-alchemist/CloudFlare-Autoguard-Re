@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import {
   DatabaseSync,
   type SQLInputValue,
@@ -85,6 +85,52 @@ class NodeSqliteD1 implements D1DatabasePort {
   }
 }
 
+class RejectingOutboxStatement implements D1PreparedStatementPort {
+  readonly inner: D1PreparedStatementPort;
+  readonly sql: string;
+
+  constructor(inner: D1PreparedStatementPort, sql: string) {
+    this.inner = inner;
+    this.sql = sql;
+  }
+
+  bind(...values: unknown[]): D1PreparedStatementPort {
+    return new RejectingOutboxStatement(
+      this.inner.bind(...values),
+      this.sql,
+    );
+  }
+
+  first<T>(): Promise<T | null> {
+    return this.inner.first<T>();
+  }
+
+  run(): Promise<D1RunResult> {
+    if (this.sql.includes("INTO notification_outbox")) {
+      return Promise.reject(new Error("sensitive outbox failure"));
+    }
+    return this.inner.run();
+  }
+}
+
+class RejectingOutboxD1 implements D1DatabasePort {
+  readonly base: NodeSqliteD1;
+
+  constructor(base: NodeSqliteD1) {
+    this.base = base;
+  }
+
+  prepare(sql: string): D1PreparedStatementPort {
+    return new RejectingOutboxStatement(this.base.prepare(sql), sql);
+  }
+
+  batch(
+    statements: readonly D1PreparedStatementPort[],
+  ): Promise<D1RunResult[]> {
+    return this.base.batch(statements);
+  }
+}
+
 const now = Date.parse("2026-07-31T00:01:00.000Z");
 const credential: CmsSignalCredential = {
   credentialId: "cms-staging-v1",
@@ -156,11 +202,15 @@ async function database(): Promise<{
   port: NodeSqliteD1;
 }> {
   const sqlite = new DatabaseSync(":memory:");
-  const migration = await readFile(
-    new URL("../../drizzle/0000_sparkling_multiple_man.sql", import.meta.url),
-    "utf8",
+  sqlite.exec("PRAGMA foreign_keys = ON");
+  const directory = new URL("../../drizzle/", import.meta.url);
+  const migrations = await Promise.all(
+    (await readdir(directory))
+      .filter((file) => file.endsWith(".sql"))
+      .sort()
+      .map((file) => readFile(new URL(file, directory), "utf8")),
   );
-  sqlite.exec(migration);
+  for (const migration of migrations) sqlite.exec(migration);
   return { sqlite, port: new NodeSqliteD1(sqlite) };
 }
 
@@ -228,7 +278,10 @@ test("canonical and CMS-compatible ingress share signed D1 receipt/audit handlin
         (SELECT COUNT(*) FROM observations) AS observations,
         (SELECT COUNT(*) FROM signal_receipts) AS receipts,
         (SELECT COUNT(*) FROM audit_events) AS audits,
-        (SELECT COUNT(*) FROM replay_claims) AS replayClaims
+        (SELECT COUNT(*) FROM replay_claims) AS replayClaims,
+        (SELECT COUNT(*) FROM incidents) AS incidents,
+        (SELECT COUNT(*) FROM incident_timeline) AS timeline,
+        (SELECT COUNT(*) FROM notification_outbox) AS outbox
     `)
     .get() as Record<string, number>;
   assert.deepEqual({ ...counts }, {
@@ -236,7 +289,95 @@ test("canonical and CMS-compatible ingress share signed D1 receipt/audit handlin
     receipts: 1,
     audits: 1,
     replayClaims: 2,
+    incidents: 1,
+    timeline: 1,
+    outbox: 1,
   });
+  const pending = sqlite.prepare(`
+    SELECT status, notification_kind, payload_json
+    FROM notification_outbox
+  `).get() as Record<string, unknown>;
+  assert.equal(pending.status, "pending");
+  assert.equal(pending.notification_kind, "incident_opened");
+  assert.equal(
+    (JSON.parse(String(pending.payload_json)) as { severity: string })
+      .severity,
+    "sev3",
+  );
+  assert.doesNotMatch(
+    String(pending.payload_json),
+    /Unhandled Worker exception|severity.*error|authorization|cookie|token/iu,
+  );
+  sqlite.close();
+});
+
+test("CMS reconcile failure is generic 503 and a fresh-envelope duplicate repairs exactly once while exact raw replay remains 409", async () => {
+  const { sqlite, port } = await database();
+  const failed = await routeCmsSignalIngress(
+    await signedRequest("/v1/signals/cms"),
+    dependencies(new RejectingOutboxD1(port)),
+  );
+  assert.equal(failed?.status, 503);
+  assert.deepEqual(await failed?.json(), {
+    error: "service_unavailable",
+  });
+  assert.deepEqual(
+    {
+      ...(sqlite.prepare(`
+        SELECT
+          (SELECT COUNT(*) FROM observations) observations,
+          (SELECT COUNT(*) FROM incidents) incidents,
+          (SELECT COUNT(*) FROM incident_timeline) timeline,
+          (SELECT COUNT(*) FROM notification_outbox) outbox
+      `).get() as Record<string, number>),
+    },
+    { observations: 1, incidents: 0, timeline: 0, outbox: 0 },
+  );
+
+  const freshEnvelope = payload({
+    sentAt: "2026-07-31T00:00:01.000Z",
+  });
+  const repaired = await routeCmsSignalIngress(
+    await signedRequest("/compat/v1/gate", freshEnvelope),
+    dependencies(port),
+  );
+  assert.equal(repaired?.status, 200);
+  assert.equal(
+    (await repaired?.json() as { status: string }).status,
+    "duplicate",
+  );
+
+  const rawReplay = await routeCmsSignalIngress(
+    await signedRequest("/compat/v1/gate", freshEnvelope),
+    dependencies(port),
+  );
+  assert.equal(rawReplay?.status, 409);
+  assert.deepEqual(await rawReplay?.json(), {
+    error: "replay_rejected",
+  });
+  assert.deepEqual(
+    {
+      ...(sqlite.prepare(`
+        SELECT
+          (SELECT COUNT(*) FROM observations) observations,
+          (SELECT COUNT(*) FROM signal_receipts) receipts,
+          (SELECT COUNT(*) FROM audit_events) audits,
+          (SELECT COUNT(*) FROM replay_claims) replayClaims,
+          (SELECT COUNT(*) FROM incidents) incidents,
+          (SELECT COUNT(*) FROM incident_timeline) timeline,
+          (SELECT COUNT(*) FROM notification_outbox) outbox
+      `).get() as Record<string, number>),
+    },
+    {
+      observations: 1,
+      receipts: 1,
+      audits: 1,
+      replayClaims: 2,
+      incidents: 1,
+      timeline: 1,
+      outbox: 1,
+    },
+  );
   sqlite.close();
 });
 

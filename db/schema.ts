@@ -1,4 +1,6 @@
+import { sql } from "drizzle-orm";
 import {
+  check,
   index,
   integer,
   primaryKey,
@@ -46,6 +48,13 @@ export const observations = sqliteTable(
       table.checkId,
       table.source,
       table.observedAt,
+      table.observationId,
+    ),
+    index("observations_failure_repair_idx").on(
+      table.siteId,
+      table.environment,
+      table.status,
+      table.createdAt,
       table.observationId,
     ),
   ],
@@ -278,6 +287,56 @@ export const incidentTimeline = sqliteTable(
     index("incident_timeline_incident_time_idx").on(
       table.incidentId,
       table.occurredAt,
+    ),
+  ],
+);
+
+export const notificationOutbox = sqliteTable(
+  "notification_outbox",
+  {
+    outboxId: text("outbox_id").primaryKey(),
+    incidentId: text("incident_id")
+      .notNull()
+      .references(() => incidents.incidentId, {
+        onDelete: "restrict",
+        onUpdate: "restrict",
+      }),
+    observationId: text("observation_id")
+      .notNull()
+      .references(() => observations.observationId, {
+        onDelete: "restrict",
+        onUpdate: "restrict",
+      }),
+    notificationKind: text("notification_kind", {
+      enum: ["incident_opened"],
+    }).notNull(),
+    status: text("status", {
+      enum: ["pending", "enqueued", "blocked"],
+    }).notNull(),
+    payloadJson: text("payload_json").notNull(),
+    payloadDigest: text("payload_digest").notNull(),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+    enqueuedAt: text("enqueued_at"),
+    lastErrorCode: text("last_error_code"),
+  },
+  (table) => [
+    uniqueIndex("notification_outbox_incident_kind_unique").on(
+      table.incidentId,
+      table.notificationKind,
+    ),
+    index("notification_outbox_pending_scan_idx").on(
+      table.status,
+      table.createdAt,
+      table.outboxId,
+    ),
+    check(
+      "notification_outbox_kind_check",
+      sql`${table.notificationKind} IN ('incident_opened')`,
+    ),
+    check(
+      "notification_outbox_status_check",
+      sql`${table.status} IN ('pending', 'enqueued', 'blocked')`,
     ),
   ],
 );
