@@ -77,6 +77,32 @@ export interface ObservationPolicy {
   validForSeconds: number;
 }
 
+export interface CmsSignalCredential extends ObservationPolicy {
+  credentialId: string;
+  token: string;
+  signingSecret: string;
+  maxAgeSeconds: number;
+  maxFutureSkewSeconds: number;
+}
+
+export interface ReplayStore {
+  claim(key: string, expiresAt: number): Promise<boolean>;
+}
+
+export interface VerifiedCmsOpsSignal {
+  credentialId: string;
+  observation: Observation;
+}
+
+export interface VerifyCmsOpsSignalRequest {
+  rawBody: Uint8Array<ArrayBuffer>;
+  authorization: string | null | undefined;
+  signature: string | null | undefined;
+  now: number;
+  credentials: readonly CmsSignalCredential[];
+  replayStore: ReplayStore;
+}
+
 export class ContractError extends Error {
   readonly code: string;
 
@@ -372,12 +398,247 @@ function stable(value: unknown): unknown {
   return value;
 }
 
+export function stableJson(value: unknown): string {
+  return JSON.stringify(stable(value));
+}
+
 async function sha256(value: unknown): Promise<string> {
-  const bytes = new TextEncoder().encode(JSON.stringify(stable(value)));
+  const bytes = new TextEncoder().encode(stableJson(value));
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
   return Array.from(digest, (byte) =>
     byte.toString(16).padStart(2, "0"),
   ).join("");
+}
+
+function secretBytes(
+  value: string,
+  code: string,
+): Uint8Array<ArrayBuffer> {
+  const bytes = new TextEncoder().encode(value);
+  if (bytes.byteLength < 32 || bytes.byteLength > 4_096) invalid(code);
+  return bytes;
+}
+
+function signatureBytes(value: unknown): Uint8Array<ArrayBuffer> {
+  if (
+    typeof value !== "string" ||
+    !/^hmac-sha256:[a-f0-9]{64}$/u.test(value)
+  ) {
+    invalid("ops_signature_invalid");
+  }
+  const hex = value.slice("hmac-sha256:".length);
+  return Uint8Array.from(
+    { length: 32 },
+    (_, index) => Number.parseInt(hex.slice(index * 2, index * 2 + 2), 16),
+  );
+}
+
+export async function signHmacSha256(
+  value: string | Uint8Array<ArrayBuffer>,
+  secret: string,
+): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    secretBytes(secret, "ops_signing_secret_invalid"),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const digest = new Uint8Array(
+    await crypto.subtle.sign(
+      "HMAC",
+      key,
+      typeof value === "string" ? new TextEncoder().encode(value) : value,
+    ),
+  );
+  return `hmac-sha256:${Array.from(digest, (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("")}`;
+}
+
+async function verifyHmacSha256(
+  value: Uint8Array<ArrayBuffer>,
+  signature: unknown,
+  secret: string,
+): Promise<boolean> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    secretBytes(secret, "ops_signing_secret_invalid"),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["verify"],
+  );
+  return crypto.subtle.verify(
+    "HMAC",
+    key,
+    signatureBytes(signature),
+    value,
+  );
+}
+
+async function bearerTokenMatches(
+  candidate: string,
+  configured: string,
+): Promise<boolean> {
+  const challenge = new TextEncoder().encode(
+    "cloudflare-guard-bearer-check-v1",
+  );
+  const configuredKey = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(configured),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const expected = await crypto.subtle.sign(
+    "HMAC",
+    configuredKey,
+    challenge,
+  );
+  const candidateKey = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(candidate),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["verify"],
+  );
+  return crypto.subtle.verify("HMAC", candidateKey, expected, challenge);
+}
+
+async function credentialFor(
+  authorization: string | null | undefined,
+  credentials: readonly CmsSignalCredential[],
+): Promise<CmsSignalCredential> {
+  if (
+    typeof authorization !== "string" ||
+    authorization.length > 4_103 ||
+    !authorization.startsWith("Bearer ") ||
+    /[\r\n]/u.test(authorization)
+  ) {
+    invalid("ops_auth_invalid");
+  }
+  const token = authorization.slice("Bearer ".length);
+  if (token.length < 16 || token.length > 4_096) invalid("ops_auth_invalid");
+  const matches: CmsSignalCredential[] = [];
+  for (const credential of credentials) {
+    validateCredential(credential);
+    if (await bearerTokenMatches(token, credential.token)) {
+      matches.push(credential);
+    }
+  }
+  if (matches.length > 1) invalid("ops_credential_duplicate");
+  return matches[0] ?? invalid("ops_auth_invalid");
+}
+
+function validateCredential(credential: CmsSignalCredential): void {
+  requireIdentifier(
+    credential.credentialId,
+    128,
+    "ops_credential_invalid",
+  );
+  if (
+    credential.token.length < 16 ||
+    credential.token.length > 4_096 ||
+    /[\r\n]/u.test(credential.token) ||
+    !/^[a-z][a-z0-9-]{2,63}$/u.test(credential.siteId) ||
+    (credential.environment !== "staging" &&
+      credential.environment !== "production") ||
+    !Number.isInteger(credential.maxAgeSeconds) ||
+    credential.maxAgeSeconds < 1 ||
+    credential.maxAgeSeconds > 900 ||
+    !Number.isInteger(credential.maxFutureSkewSeconds) ||
+    credential.maxFutureSkewSeconds < 0 ||
+    credential.maxFutureSkewSeconds > 300 ||
+    !Number.isInteger(credential.validForSeconds) ||
+    credential.validForSeconds < 1 ||
+    credential.validForSeconds > 86_400
+  ) {
+    invalid("ops_credential_invalid");
+  }
+  secretBytes(credential.signingSecret, "ops_credential_invalid");
+}
+
+export async function verifyCmsOpsSignalRequest(
+  request: VerifyCmsOpsSignalRequest,
+): Promise<VerifiedCmsOpsSignal> {
+  if (
+    !(request.rawBody instanceof Uint8Array) ||
+    request.rawBody.byteLength > 64 * 1_024 ||
+    !Number.isFinite(request.now)
+  ) {
+    invalid("ops_request_invalid");
+  }
+  const credential = await credentialFor(
+    request.authorization,
+    request.credentials,
+  );
+  validateCredential(credential);
+  if (
+    !(await verifyHmacSha256(
+      request.rawBody,
+      request.signature,
+      credential.signingSecret,
+    ))
+  ) {
+    invalid("ops_signature_invalid");
+  }
+
+  let rawText: string;
+  try {
+    rawText = new TextDecoder("utf-8", { fatal: true }).decode(
+      request.rawBody,
+    );
+  } catch {
+    invalid("ops_body_invalid_utf8");
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawText);
+  } catch {
+    invalid("ops_body_invalid");
+  }
+  if (stableJson(parsed) !== rawText) {
+    invalid("ops_body_noncanonical");
+  }
+  const envelope = parseCmsOpsSignalEnvelope(parsed);
+  if (envelope.environment !== credential.environment) {
+    invalid("ops_scope_invalid");
+  }
+  const ageMilliseconds = request.now - Date.parse(envelope.sentAt);
+  if (ageMilliseconds > credential.maxAgeSeconds * 1_000) {
+    invalid("ops_envelope_stale");
+  }
+  if (ageMilliseconds < -credential.maxFutureSkewSeconds * 1_000) {
+    invalid("ops_envelope_from_future");
+  }
+
+  const observation = await toObservation(envelope, credential);
+  const requestDigest = Array.from(
+    new Uint8Array(
+      await crypto.subtle.digest("SHA-256", request.rawBody),
+    ),
+    (byte) => byte.toString(16).padStart(2, "0"),
+  ).join("");
+  const replayKey = `request:${credential.credentialId}:${requestDigest}`;
+  const expiresAt = Math.ceil(
+    (request.now +
+      Math.max(credential.maxAgeSeconds, credential.maxFutureSkewSeconds) *
+        1_000) /
+      1_000,
+  );
+  if (
+    !(await request.replayStore.claim(
+      replayKey,
+      expiresAt,
+    ))
+  ) {
+    invalid("ops_replay_detected");
+  }
+
+  return {
+    credentialId: credential.credentialId,
+    observation,
+  };
 }
 
 function componentFor(signal: CmsOpsSignal): Component {
@@ -454,4 +715,3 @@ export async function toObservation(
     evidenceId: `ev_${digest.slice(32, 64)}`,
   };
 }
-
