@@ -107,6 +107,10 @@ test("private Sites release package has an opaque project binding and complete r
   assert.match(worker, /NOTIFICATION_PROVIDER_ENABLED/u);
   assert.match(worker, /NOTIFICATION_PROVIDER_ENDPOINT/u);
   assert.match(worker, /NOTIFICATION_PROVIDER_TOKEN/u);
+  assert.match(worker, /routeOperationalReadRequest/u);
+  assert.match(worker, /loadCanonicalOperabilityFromBindings/u);
+  assert.match(worker, /unknownV1Response/u);
+  assert.match(worker, /stripHeadResponse/u);
   const publicProducer = worker.indexOf(
     "await runDfconnectScheduledPublicDelivery",
   );
@@ -207,4 +211,34 @@ test("private Sites release package has an opaque project binding and complete r
   assert.match(provider, /redirect: "manual"/u);
   assert.match(provider, /request\.timeoutMs !== 5_000/u);
   assert.doesNotMatch(provider, /response\.(?:text|json|arrayBuffer)\s*\(/u);
+
+  const operability = await readFile(
+    new URL("lib/services/canonical-operability.ts", root),
+    "utf8",
+  );
+  assert.match(operability, /COMPONENT_CATALOG/u);
+  assert.match(operability, /OPERATION_CATALOG/u);
+  assert.match(operability, /readOperationalVerdicts/u);
+  assert.match(operability, /component_policy_missing/u);
+  assert.match(operability, /fresh_pass/u);
+  assert.match(operability, /EVIDENCE_BUCKET/u);
+  assert.doesNotMatch(operability, /payload_json|payload_digest/u);
+  assert.doesNotMatch(operability, /database\.(?:batch|run)\s*\(/u);
+
+  const nativeBindings = await readFile(
+    new URL("lib/runtime/cloudflare-bindings.server.ts", root),
+    "utf8",
+  );
+  const pureConsoleLoader = await readFile(
+    new URL("lib/runtime/console-snapshot.ts", root),
+    "utf8",
+  );
+  const page = await readFile(new URL("app/page.tsx", root), "utf8");
+  assert.match(nativeBindings, /cloudflare:workers/u);
+  assert.match(pureConsoleLoader, /loadConsoleSnapshotFromBindings/u);
+  assert.doesNotMatch(pureConsoleLoader, /cloudflare:workers/u);
+  assert.match(page, /force-dynamic/u);
+  assert.match(page, /loadConsoleSnapshot/u);
+  assert.doesNotMatch(page, /\bheaders\s*\(/u);
+  assert.doesNotMatch(page, /x-guard-site-id|x-guard-environment/u);
 });

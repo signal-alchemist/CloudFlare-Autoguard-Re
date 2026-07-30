@@ -319,6 +319,16 @@ code,
   font-size: 8px;
 }
 
+.remote-chip[data-live="true"] {
+  border-color: #6ebaa4;
+  background: var(--green-soft);
+  color: #0f624d;
+}
+
+.remote-chip[data-live="true"] span {
+  color: var(--green);
+}
+
 .refresh-button {
   padding: 8px 12px;
   border: 1px solid var(--line);
@@ -403,6 +413,19 @@ h1 {
   letter-spacing: -0.05em;
 }
 
+.hero-state[data-state="healthy"] strong {
+  color: var(--green);
+}
+
+.hero-state[data-state="degraded"] strong,
+.hero-state[data-state="maintenance"] strong {
+  color: #a45b0e;
+}
+
+.hero-state[data-state="unhealthy"] strong {
+  color: var(--red);
+}
+
 .hero-state > span:last-child {
   color: var(--muted);
   font-size: 11px;
@@ -448,6 +471,25 @@ h1 {
   font-size: 9px;
   font-weight: 800;
   letter-spacing: 0.1em;
+}
+
+.truth-banner[data-live="true"] {
+  border-color: #7bbca9;
+  background: #eaf8f2;
+}
+
+.truth-banner[data-live="true"] .truth-icon {
+  border-color: #5aa88f;
+  color: var(--green);
+}
+
+.truth-banner[data-live="true"] strong,
+.truth-banner[data-live="true"] > span {
+  color: #0f624d;
+}
+
+.truth-banner[data-live="true"] p {
+  color: #3f6c60;
 }
 
 .metric-grid {
@@ -619,22 +661,44 @@ h1 {
 
 .status-unknown,
 .status-remote-not-run,
-.status-not-run {
+.status-not-run,
+.status-unavailable,
+.status-not-configured,
+.status-no-evidence,
+.status-fresh-unknown,
+.status-missing {
   background: var(--amber-soft);
   color: #89610b;
 }
 
-.status-deny {
+.status-deny,
+.status-unhealthy,
+.status-attention,
+.status-not-ready,
+.status-sev1,
+.status-sev2 {
   background: var(--red-soft);
   color: #a5342e;
 }
 
-.status-degraded {
+.status-degraded,
+.status-maintenance,
+.status-pending,
+.status-stale,
+.status-sev3,
+.status-sev4 {
   background: #fff0dc;
   color: #a45b0e;
 }
 
-.status-local-pass {
+.status-local-pass,
+.status-healthy,
+.status-allow,
+.status-ready,
+.status-configured,
+.status-observed,
+.status-fresh,
+.status-fresh-pass {
   background: var(--green-soft);
   color: var(--green);
 }
@@ -785,10 +849,26 @@ h1 {
   font-weight: 800;
 }
 
-.gate-row > p {
+.gate-dependencies p,
+.gate-dependencies small {
   margin: 0;
   color: var(--muted);
   font-family: var(--font-geist-mono), monospace;
+  font-size: 8px;
+}
+
+.gate-dependencies small {
+  display: block;
+  margin-top: 3px;
+  overflow-wrap: anywhere;
+  color: #7b5c15;
+}
+
+.reason-code-list {
+  display: block;
+  margin-top: 7px;
+  overflow-wrap: anywhere;
+  color: #795d1c;
   font-size: 8px;
 }
 
@@ -843,6 +923,45 @@ h1 {
   margin: 7px auto 0;
   color: var(--muted);
   font-size: 10px;
+}
+
+.incident-list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.incident-list li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 14px;
+  padding: 14px 18px;
+  border-bottom: 1px solid #e2e1dc;
+}
+
+.incident-list li > div {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.incident-list strong,
+.incident-list code {
+  overflow-wrap: anywhere;
+  color: var(--ink-900);
+  font-size: 9px;
+}
+
+.incident-list p,
+.incident-list small {
+  margin: 0;
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.incident-list small {
+  text-align: right;
 }
 
 .mini-timeline {
@@ -997,12 +1116,19 @@ h1 {
 }
 
 .readiness-list b {
-  color: var(--green);
   font-family: var(--font-geist-mono), monospace;
   font-size: 8px;
 }
 
-.readiness-list li:nth-last-child(-n + 2) b {
+.readiness-list b[data-state="READY"] {
+  color: var(--green);
+}
+
+.readiness-list b[data-state="NOT_READY"] {
+  color: var(--red);
+}
+
+.readiness-list b[data-state="UNAVAILABLE"] {
   color: #936c10;
 }
 
@@ -1138,7 +1264,7 @@ h1 {
     grid-template-columns: 1.4fr 0.7fr;
   }
 
-  .gate-row > p {
+  .gate-dependencies {
     grid-column: 1 / -1;
     grid-row: 2;
   }
@@ -1182,6 +1308,22 @@ h1 {
 
   .gate-row {
     grid-template-columns: 1fr auto;
+  }
+
+  .incident-list li {
+    grid-template-columns: 1fr;
+  }
+
+  .incident-list small {
+    text-align: left;
+  }
+
+  .readiness-list li {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .readiness-list b {
+    grid-column: 2;
   }
 
   .mini-timeline {

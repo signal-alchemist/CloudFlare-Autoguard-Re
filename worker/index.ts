@@ -19,6 +19,11 @@ import {
 } from "../lib/http/maintenance-request.ts";
 import { handlePostDeployRequest } from "../lib/http/post-deploy.ts";
 import {
+  routeOperationalReadRequest,
+  stripHeadResponse,
+  unknownV1Response,
+} from "../lib/http/operability.ts";
+import {
   applyConsoleSecurityHeaders,
   authorizeConsoleRequest,
   consoleAccessErrorResponse,
@@ -50,6 +55,10 @@ import {
   runDfconnectScheduledPublicDelivery,
 } from "../lib/services/scheduled-public-delivery.ts";
 import {
+  loadCanonicalOperabilityFromBindings,
+  type GuardReadBindings,
+} from "../lib/services/canonical-operability.ts";
+import {
   consumeConfiguredNotificationBatch,
   dispatchConfiguredPendingNotifications,
   type NotificationRuntimeEnv,
@@ -58,6 +67,7 @@ import {
 interface Env {
   ASSETS: Fetcher;
   DB?: D1Database;
+  EVIDENCE_BUCKET?: R2Bucket;
   GUARD_SITE_ID?: string;
   GUARD_ENVIRONMENT?: "staging" | "production";
   NOTIFICATION_QUEUE?: Queue<unknown>;
@@ -240,11 +250,19 @@ function consoleEnvironment(
   return value === "production" || value === "staging" ? value : null;
 }
 
-async function handleConsoleRequest(
+interface ResolvedConsoleAccess {
+  scope: {
+    siteId: string;
+    environment: ConsoleEnvironment;
+  };
+  accessAudience: string;
+  verifier: ConsoleIdentityVerifier;
+}
+
+function resolveConsoleAccess(
   request: Request,
   env: Env,
-  ctx: ExecutionContext,
-): Promise<Response> {
+): ResolvedConsoleAccess | null {
   const url = new URL(request.url);
   const loopback =
     url.hostname === "localhost" ||
@@ -262,7 +280,7 @@ async function handleConsoleRequest(
     env.CONSOLE_ACCESS_AUDIENCE ??
     (localMode ? "guard-local-development" : undefined);
   if (!siteId || environment === null || !accessAudience) {
-    return unavailableConsole();
+    return null;
   }
 
   let verifier: ConsoleIdentityVerifier;
@@ -282,25 +300,54 @@ async function handleConsoleRequest(
         audience: accessAudience,
       });
   } else {
-    return unavailableConsole();
+    return null;
   }
 
-  const scope = { siteId, environment };
+  return {
+    scope: { siteId, environment },
+    accessAudience,
+    verifier,
+  };
+}
+
+async function authorizeOwnerRead(
+  request: Request,
+  env: Env,
+  requestedScope: {
+    siteId: string;
+    environment: ConsoleEnvironment;
+  },
+): Promise<Response | null> {
+  const access = resolveConsoleAccess(request, env);
+  if (access === null) return unavailableConsole();
   const decision = await authorizeConsoleRequest(
     request,
     {
       policy: {
-        ...scope,
-        accessAudience,
+        ...access.scope,
+        accessAudience: access.accessAudience,
       },
-      requestedScope: scope,
+      requestedScope,
     },
-    verifier,
+    access.verifier,
   );
   if (!decision.allowed) return consoleAccessErrorResponse(decision);
+  return null;
+}
+
+async function handleConsoleRequest(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+): Promise<Response> {
+  const url = new URL(request.url);
+  const access = resolveConsoleAccess(request, env);
+  if (access === null) return unavailableConsole();
+  const denied = await authorizeOwnerRead(request, env, access.scope);
+  if (denied !== null) return denied;
 
   const nonce = createConsoleCspNonce();
-  const securedRequest = prepareConsoleHtmlRequest(request, nonce, scope);
+  const securedRequest = prepareConsoleHtmlRequest(request, nonce);
   let response: Response;
   if (url.pathname === "/_vinext/image") {
     const allowedWidths = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES];
@@ -330,64 +377,89 @@ async function handleConsoleRequest(
 // dangerouslyAllowSVG: true in next.config.js and uncomment below:
 // const imageConfig: ImageConfig = { dangerouslyAllowSVG: true };
 
+async function handleFetchRequest(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+): Promise<Response> {
+  const url = new URL(request.url);
+  const operationalRead = await routeOperationalReadRequest(
+    request,
+    env as unknown as GuardReadBindings,
+    {
+      authorizeOwner: (candidate, requestedScope) =>
+        authorizeOwnerRead(candidate, env, requestedScope),
+      loadSnapshot: loadCanonicalOperabilityFromBindings,
+      clock: Date.now,
+    },
+  );
+  if (operationalRead !== null) return operationalRead;
+
+  const cmsIngress = await routeCmsSignalIngress(request, {
+    signal: cmsSignalDependencies(env),
+    gate: (gateRequest) => handleGateRequest(gateRequest, env),
+  });
+  if (cmsIngress !== null) return cmsIngress;
+
+  if (url.pathname === "/v1/maintenance-requests") {
+    const dependencies = maintenanceDependencies(env);
+    return dependencies === null
+      ? unavailableJson()
+      : handleMaintenanceRequest(request, dependencies);
+  }
+
+  if (url.pathname === "/v1/post-deploy-checks") {
+    if (
+      !env.GUARD_SITE_ID ||
+      !env.GUARD_ENVIRONMENT ||
+      !env.DB ||
+      !env.CMS_POST_DEPLOY_SERVICE_TOKEN ||
+      env.CMS_POST_DEPLOY_SERVICE_TOKEN.length < 16 ||
+      env.CMS_POST_DEPLOY_SERVICE_TOKEN.length > 4_096 ||
+      /[\r\n]/u.test(env.CMS_POST_DEPLOY_SERVICE_TOKEN) ||
+      !env.CMS_POST_DEPLOY_SIGNING_SECRET ||
+      new TextEncoder().encode(
+        env.CMS_POST_DEPLOY_SIGNING_SECRET,
+      ).byteLength < 32
+    ) {
+      return unavailableJson();
+    }
+    return handlePostDeployRequest(request, {
+      credential: {
+        siteId: env.GUARD_SITE_ID,
+        environment: env.GUARD_ENVIRONMENT,
+        serviceToken: env.CMS_POST_DEPLOY_SERVICE_TOKEN,
+        signingSecret: env.CMS_POST_DEPLOY_SIGNING_SECRET,
+        maxAgeSeconds: 300,
+        maxFutureSkewSeconds: 30,
+      },
+      repository: new D1PostDeployRepository(
+        env.DB as unknown as D1DatabasePort,
+      ),
+      checker: createPostDeployOperationalChecker({
+        repository: operationalState(env),
+        runtimeIdentities:
+          new D1DeploymentRuntimeIdentityRepository(
+            env.DB as unknown as D1DatabasePort,
+          ),
+        clock: Date.now,
+      }),
+      clockSeconds: () => Math.floor(Date.now() / 1_000),
+    });
+  }
+
+  if (url.pathname.startsWith("/v1/")) {
+    return unknownV1Response(request);
+  }
+  return handleConsoleRequest(request, env, ctx);
+}
+
 const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    const url = new URL(request.url);
-
-    const cmsIngress = await routeCmsSignalIngress(request, {
-      signal: cmsSignalDependencies(env),
-      gate: (gateRequest) => handleGateRequest(gateRequest, env),
-    });
-    if (cmsIngress !== null) return cmsIngress;
-
-    if (url.pathname === "/v1/maintenance-requests") {
-      const dependencies = maintenanceDependencies(env);
-      return dependencies === null
-        ? unavailableJson()
-        : handleMaintenanceRequest(request, dependencies);
-    }
-
-    if (url.pathname === "/v1/post-deploy-checks") {
-      if (
-        !env.GUARD_SITE_ID ||
-        !env.GUARD_ENVIRONMENT ||
-        !env.DB ||
-        !env.CMS_POST_DEPLOY_SERVICE_TOKEN ||
-        env.CMS_POST_DEPLOY_SERVICE_TOKEN.length < 16 ||
-        env.CMS_POST_DEPLOY_SERVICE_TOKEN.length > 4_096 ||
-        /[\r\n]/u.test(env.CMS_POST_DEPLOY_SERVICE_TOKEN) ||
-        !env.CMS_POST_DEPLOY_SIGNING_SECRET ||
-        new TextEncoder().encode(
-          env.CMS_POST_DEPLOY_SIGNING_SECRET,
-        ).byteLength < 32
-      ) {
-        return unavailableJson();
-      }
-      return handlePostDeployRequest(request, {
-        credential: {
-          siteId: env.GUARD_SITE_ID,
-          environment: env.GUARD_ENVIRONMENT,
-          serviceToken: env.CMS_POST_DEPLOY_SERVICE_TOKEN,
-          signingSecret: env.CMS_POST_DEPLOY_SIGNING_SECRET,
-          maxAgeSeconds: 300,
-          maxFutureSkewSeconds: 30,
-        },
-        repository: new D1PostDeployRepository(
-          env.DB as unknown as D1DatabasePort,
-        ),
-        checker: createPostDeployOperationalChecker({
-          repository: operationalState(env),
-          runtimeIdentities:
-            new D1DeploymentRuntimeIdentityRepository(
-              env.DB as unknown as D1DatabasePort,
-            ),
-          clock: Date.now,
-        }),
-        clockSeconds: () => Math.floor(Date.now() / 1_000),
-      });
-    }
-
-    return handleConsoleRequest(request, env, ctx);
+    return stripHeadResponse(
+      request,
+      await handleFetchRequest(request, env, ctx),
+    );
   },
 
   async scheduled(

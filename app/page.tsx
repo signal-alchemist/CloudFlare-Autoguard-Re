@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
-import { headers } from "next/headers";
 import { GuardConsole } from "./GuardConsole";
-import { dashboardSnapshots } from "../lib/ui/dashboard-model";
+import { loadConsoleSnapshot } from "../lib/runtime/console-snapshot.server";
 
 export const metadata: Metadata = {
   title: "CloudFlare Guard | DFConnect",
@@ -9,15 +8,15 @@ export const metadata: Metadata = {
     "DFConnectの公開配信、CMS、問い合わせ、通知、デプロイを可視化するread-only運用コンソール。",
 };
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 export default async function Home() {
-  const requestHeaders = await headers();
-  const requestedEnvironment = requestHeaders.get("x-guard-environment");
-  const environment =
-    requestedEnvironment === "staging" ? "staging" : "production";
+  const snapshot = await loadConsoleSnapshot();
 
   return (
     <GuardConsole
-      snapshot={dashboardSnapshots[environment]}
+      snapshot={snapshot}
       productName="CloudFlare Guard"
     />
   );

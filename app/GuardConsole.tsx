@@ -145,9 +145,10 @@ export function GuardConsole({
           <div className="topbar-actions">
             <span
               className="remote-chip"
-              aria-label="リモート証跡: REMOTE NOT RUN"
+              data-live={snapshot.dataAvailability === "LIVE"}
+              aria-label={`リモート証跡: ${snapshot.evidenceMode}`}
             >
-              <span aria-hidden="true">●</span> REMOTE NOT RUN
+              <span aria-hidden="true">●</span> {snapshot.evidenceMode}
             </span>
             <button
               className="refresh-button"
@@ -184,6 +185,7 @@ export function GuardConsole({
             </div>
             <div
               className="hero-state"
+              data-state={snapshot.operability.toLowerCase()}
               role="status"
               aria-live="polite"
               aria-atomic="true"
@@ -194,16 +196,17 @@ export function GuardConsole({
             </div>
           </section>
 
-          <section className="truth-banner" aria-label="リモート検証状況">
+          <section
+            className="truth-banner"
+            data-live={snapshot.dataAvailability === "LIVE"}
+            aria-label="リモート検証状況"
+          >
             <div className="truth-icon" aria-hidden="true">
-              !
+              {snapshot.dataAvailability === "LIVE" ? "✓" : "!"}
             </div>
             <div>
-              <strong>最新のリモート証跡は未取得</strong>
-              <p>
-                ローカル実装は検証済みですが、Cloudflare資源・外部probe・通知先は
-                NOT RUNです。すべてのGateは安全側でDENYを維持します。
-              </p>
+              <strong>{snapshot.truth.title}</strong>
+              <p>{snapshot.truth.detail}</p>
             </div>
             <span>{snapshot.evidenceMode}</span>
           </section>
@@ -216,8 +219,9 @@ export function GuardConsole({
                 <span>/ 08</span>
               </div>
               <small>
+                {componentCounts.HEALTHY ?? 0} healthy ·{" "}
                 {componentCounts.UNKNOWN ?? 0} unknown ·{" "}
-                {componentCounts.DEGRADED ?? 0} degraded
+                {componentCounts.UNHEALTHY ?? 0} unhealthy
               </small>
             </article>
             <article className="metric-card">
@@ -233,18 +237,26 @@ export function GuardConsole({
             <article className="metric-card">
               <p>Active incidents</p>
               <div className="metric-value">
-                <strong>{snapshot.incidents.active}</strong>
-                <span>REMOTE</span>
+                <strong>{snapshot.incidents.active ?? "—"}</strong>
+                <span>
+                  {snapshot.incidents.available ? "ACTIVE" : "UNKNOWN"}
+                </span>
               </div>
-              <small>未取得のため0件とは判定しません</small>
+              <small>
+                {snapshot.incidents.available
+                  ? snapshot.incidents.truncated
+                    ? "表示上限を超えています"
+                    : "D1 read succeeded"
+                  : "未取得を0件として扱いません"}
+              </small>
             </article>
             <article className="metric-card">
-              <p>Local verification</p>
+              <p>Scheduler heartbeat</p>
               <div className="metric-value">
-                <strong>{snapshot.localVerification.tests}</strong>
-                <span>TESTS</span>
+                <strong>{snapshot.scheduler.displayState}</strong>
+                <span>HEARTBEAT</span>
               </div>
-              <small>typecheck · lint · build / LOCAL PASS</small>
+              <small>{snapshot.scheduler.detail}</small>
             </article>
           </section>
 
@@ -294,10 +306,21 @@ export function GuardConsole({
                       <dt>Evidence</dt>
                       <dd>{component.evidence}</dd>
                     </div>
+                    <div>
+                      <dt>Active Incident</dt>
+                      <dd>{component.activeIncidentCount ?? "—"}</dd>
+                    </div>
                   </dl>
                   <details>
                     <summary>判定理由</summary>
-                    <p>{resolveConsoleReason(component.reasonCode)}</p>
+                    <p>
+                      {resolveConsoleReason(
+                        component.reasonCodes[0] ?? "component_reason_missing",
+                      )}
+                    </p>
+                    <code className="reason-code-list">
+                      {component.reasonCodes.join(" · ")}
+                    </code>
                   </details>
                 </article>
               ))}
@@ -338,7 +361,12 @@ export function GuardConsole({
                       <code>{gate.id}</code>
                     </div>
                   </div>
-                  <p>{gate.required.join(" · ")}</p>
+                  <div className="gate-dependencies">
+                    <p>{gate.required.join(" · ")}</p>
+                    <small>
+                      {gate.reasonCodes.join(" · ")}
+                    </small>
+                  </div>
                   <StatusBadge status={gate.decision} compact />
                   <span className="freshness-value">{gate.freshness}</span>
                 </article>
@@ -356,16 +384,52 @@ export function GuardConsole({
                   <p className="eyebrow">03 / RESPONSE</p>
                   <h2 id="incidents-title">インシデント</h2>
                 </div>
-                <StatusBadge status="REMOTE_NOT_RUN" compact />
+                <StatusBadge
+                  status={
+                    snapshot.incidents.available
+                      ? snapshot.incidents.active === 0
+                        ? "OBSERVED"
+                        : "ATTENTION"
+                      : "REMOTE_NOT_RUN"
+                  }
+                  compact
+                />
               </div>
-              <div className="empty-state">
-                <span aria-hidden="true">◎</span>
-                <h3>リモートIncidentは未取得</h3>
-                <p>
-                  「0件」ではありません。D1本番bindingとshadow運用開始後に
-                  open / monitoring / manual_required を表示します。
-                </p>
-              </div>
+              {snapshot.incidents.available &&
+              snapshot.incidents.items.length > 0 ? (
+                <ul className="incident-list">
+                  {snapshot.incidents.items.map((incident) => (
+                    <li key={incident.incidentId}>
+                      <div>
+                        <StatusBadge
+                          status={incident.severity.toUpperCase()}
+                          compact
+                        />
+                        <strong>{incident.component}</strong>
+                      </div>
+                      <code>{incident.incidentId}</code>
+                      <p>{incident.reasonCode}</p>
+                      <small>
+                        {incident.state} · opened {incident.openedAt}
+                      </small>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <div className="empty-state">
+                  <span aria-hidden="true">◎</span>
+                  <h3>
+                    {snapshot.incidents.available
+                      ? "Active Incidentはありません"
+                      : "リモートIncidentは未取得"}
+                  </h3>
+                  <p>
+                    {snapshot.incidents.available
+                      ? "D1のscope付き読取結果です。監視証跡の不足はcomponentのUNKNOWNとして別に表示します。"
+                      : "「0件」ではありません。D1を取得できないため件数は不明です。"}
+                  </p>
+                </div>
+              )}
               <div className="mini-timeline" aria-label="Incident状態遷移">
                 {["open", "acknowledged", "mitigating", "monitoring", "resolved"].map(
                   (state, index) => (
@@ -450,12 +514,20 @@ export function GuardConsole({
               <ul className="readiness-list">
                 {snapshot.readiness.items.map((item) => (
                   <li key={item.label}>
-                    <span aria-hidden="true">{item.local ? "✓" : "–"}</span>
+                    <span aria-hidden="true">
+                      {item.state === "READY"
+                        ? "✓"
+                        : item.state === "NOT_READY"
+                          ? "!"
+                          : "–"}
+                    </span>
                     <div>
                       <strong>{item.label}</strong>
                       <small>{item.detail}</small>
                     </div>
-                    <b>{item.local ? "LOCAL PASS" : "NOT RUN"}</b>
+                    <b data-state={item.state}>
+                      {item.state.replaceAll("_", " ")}
+                    </b>
                   </li>
                 ))}
               </ul>

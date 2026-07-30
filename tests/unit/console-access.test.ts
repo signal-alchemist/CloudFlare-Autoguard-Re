@@ -232,23 +232,19 @@ test("console access rejects self-asserted identity, cross-scope reads, unsafe o
   const prepared = prepareConsoleHtmlRequest(
     spoofed,
     nonce,
-    {
-      siteId: "dfconnect",
-      environment: "production",
-    },
   );
   assert.match(
     prepared.headers.get("content-security-policy") ?? "",
     new RegExp(`script-src 'self' 'nonce-${nonce}' 'strict-dynamic'`, "u"),
   );
-  assert.equal(prepared.headers.get("x-guard-site-id"), "dfconnect");
-  assert.equal(prepared.headers.get("x-guard-environment"), "production");
   for (const sensitive of [
     "authorization",
     "cookie",
     "cf-access-jwt-assertion",
     "cf-access-authenticated-user-email",
     "oai-authenticated-user-email",
+    "x-guard-site-id",
+    "x-guard-environment",
   ]) {
     assert.equal(prepared.headers.get(sensitive), null);
   }

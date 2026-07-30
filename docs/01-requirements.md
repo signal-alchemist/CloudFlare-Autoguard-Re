@@ -207,6 +207,32 @@ canonical APIへ分離する。
   定義されるまで新規通知を作らずfail-closedにする。migration前に解決済みの
   opening evidenceは遅延通知せず`blocked` outboxとして収束させる。
 
+### GRD-F-013 運用状態read model / readiness
+
+- `GET|HEAD /live`は認証・D1・R2・Queue・provider・policy・schedulerに触れず、
+  process livenessだけを返す。その他methodは`405`と`Allow: GET, HEAD`を返す。
+- `/ready`と
+  `/v1/sites/:siteId/environments/:env/operability`はowner認証成功後だけ
+  read modelを取得する。site/environmentはdeployment bindingで固定し、
+  未認証のcross-scopeは`401`、認証済みのcross-scopeは`403`とする。
+- canonical v1は常に固定8 component / 4 operation gateを返す。未設定policyは
+  component `unknown`、`component_policy_missing`、依存Gate `deny`とし、
+  有効な欠損をD1障害と混同しない。
+- componentはfreshness、last observation、active Incident countを持つ。
+  Incidentは総数と最大100件のsanitized item、`truncated`を返す。
+  schedulerは`fresh_pass | fresh_unknown | stale | missing`、deployment
+  identityは`fresh | stale | missing`を明示する。
+- readinessは同じcanonical loaderから、scope/policy、console認証設定、
+  D1/schema、private R2 read、全CMS credential group、Queue/provider、
+  checked-in scheduled manifest、fresh PASS scheduler heartbeatを判定する。
+  どれか不足時はdetailを返さないgeneric `503 not_ready`とする。
+- canonical GET/HEADとServer Componentは専用read-only D1 portを使い、
+  verdict materialization、Incident/freeze/outbox更新、provider呼出を行わない。
+- API/HTML/headerへnotification payload/digest、Incident scope、correlation、
+  requester、credential、raw reason/provider responseを出さない。
+- 全GET routeと全error classでHEADはGETと同じstatus/header、空bodyとする。
+  unknown `/v1`はsecurity/no-store header付きJSON `404`とする。
+
 ## 5. 非機能・セキュリティ要件
 
 - contact name/email/body/IP、Cookie、Authorization、Turnstile token、

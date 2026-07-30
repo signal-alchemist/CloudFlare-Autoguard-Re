@@ -21,14 +21,24 @@ export interface D1AllResult<T> {
   results: T[];
 }
 
-export interface D1OperationalStatementPort {
-  bind(...values: unknown[]): D1OperationalStatementPort;
+export interface D1OperationalReadStatementPort {
+  bind(...values: unknown[]): D1OperationalReadStatementPort;
   first<T>(): Promise<T | null>;
   all<T>(): Promise<D1AllResult<T>>;
+}
+
+export interface D1OperationalStatementPort
+  extends D1OperationalReadStatementPort {
+  bind(...values: unknown[]): D1OperationalStatementPort;
   run(): Promise<D1RunResult>;
 }
 
-export interface D1OperationalDatabasePort {
+export interface D1OperationalReadDatabasePort {
+  prepare(sql: string): D1OperationalReadStatementPort;
+}
+
+export interface D1OperationalDatabasePort
+  extends D1OperationalReadDatabasePort {
   prepare(sql: string): D1OperationalStatementPort;
   batch(
     statements: readonly D1OperationalStatementPort[],
@@ -513,6 +523,54 @@ const selectVerdicts = `
   ORDER BY component
 `;
 
+export async function readOperationalVerdicts(
+  database: D1OperationalReadDatabasePort,
+  policySet: OperationalPolicySetV1,
+  input: {
+    siteId: string;
+    environment: Environment;
+    nowMs: number;
+  },
+): Promise<readonly ComponentVerdict[]> {
+  const policies = validatePolicySet(policySet);
+  if (
+    input.siteId !== policySet.siteId ||
+    input.environment !== policySet.environment ||
+    !Number.isFinite(input.nowMs)
+  ) {
+    invalid("operational_state_scope_invalid");
+  }
+  const tuples = allowedTuples(policies);
+  const bindings = tuples.flatMap((tuple) => [
+    tuple.component,
+    tuple.checkId,
+    tuple.source,
+  ]);
+  const latest = await database
+    .prepare(latestObservationSql(tuples.length))
+    .bind(...bindings, input.siteId, input.environment)
+    .all<ObservationRow>();
+  if (
+    !latest.success ||
+    !Array.isArray(latest.results) ||
+    latest.results.length > maximumLatestObservationRows
+  ) {
+    throw new Error("operational_observation_read_failed");
+  }
+  const allowlist = new Set(
+    tuples.map(
+      (tuple) =>
+        `${tuple.component}\u0000${tuple.checkId}\u0000${tuple.source}`,
+    ),
+  );
+  const observations = latest.results.map((row) =>
+    decodeObservation(row, policySet, allowlist),
+  );
+  return policies.map((policy) =>
+    evaluateComponentVerdict(policy, observations, input.nowMs),
+  );
+}
+
 const selectActiveFreezes = `
   SELECT
     freeze_id, site_id, environment, reason_code, correlation_id,
@@ -566,33 +624,10 @@ implements OperationalStateRepository {
     nowMs: number;
   }): Promise<readonly ComponentVerdict[]> {
     this.assertScope(input);
-    const bindings = this.tuples.flatMap((tuple) => [
-      tuple.component,
-      tuple.checkId,
-      tuple.source,
-    ]);
-    const latest = await this.database
-      .prepare(latestObservationSql(this.tuples.length))
-      .bind(...bindings, input.siteId, input.environment)
-      .all<ObservationRow>();
-    if (
-      !latest.success ||
-      !Array.isArray(latest.results) ||
-      latest.results.length > maximumLatestObservationRows
-    ) {
-      throw new Error("operational_observation_read_failed");
-    }
-    const allowlist = new Set(
-      this.tuples.map(
-        (tuple) =>
-          `${tuple.component}\u0000${tuple.checkId}\u0000${tuple.source}`,
-      ),
-    );
-    const observations = latest.results.map((row) =>
-      decodeObservation(row, this.policySet, allowlist),
-    );
-    const verdicts = this.policies.map((policy) =>
-      evaluateComponentVerdict(policy, observations, input.nowMs),
+    const verdicts = await readOperationalVerdicts(
+      this.database,
+      this.policySet,
+      input,
     );
     const writes = verdicts.map((verdict) =>
       this.database.prepare(upsertVerdict).bind(

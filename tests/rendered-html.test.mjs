@@ -1,34 +1,170 @@
 import assert from "node:assert/strict";
-import { access, readFile } from "node:fs/promises";
+import { access, readFile, readdir } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { Log, LogLevel, Miniflare } from "miniflare";
 
 const templateRoot = new URL("../", import.meta.url);
+const serverRoot = fileURLToPath(new URL("../dist/server/", import.meta.url));
+const clientRoot = fileURLToPath(new URL("../dist/client/", import.meta.url));
+const workerConfig = JSON.parse(
+  await readFile(new URL("../dist/server/wrangler.json", import.meta.url), "utf8"),
+);
 
 async function render({
   url = "http://localhost/",
+  method = "GET",
   headers = {},
   env = {},
+  d1 = false,
 } = {}) {
-  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
-  workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
-  const { default: worker } = await import(workerUrl.href);
-
-  return worker.fetch(
-    new Request(url, {
-      headers: { accept: "text/html", ...headers },
-    }),
-    {
-      ASSETS: {
-        fetch: async () => new Response("Not found", { status: 404 }),
+  const runtime = new Miniflare({
+    scriptPath: fileURLToPath(
+      new URL("../dist/server/index.js", import.meta.url),
+    ),
+    modules: true,
+    modulesRoot: serverRoot,
+    modulesRules: workerConfig.rules.map((rule) => ({
+      type: rule.type,
+      include: rule.globs,
+    })),
+    compatibilityDate: workerConfig.compatibility_date,
+    compatibilityFlags: workerConfig.compatibility_flags,
+    bindings: env,
+    ...(d1 ? { d1Databases: ["DB"] } : {}),
+    assets: {
+      directory: clientRoot,
+      binding: "ASSETS",
+      routerConfig: {
+        has_user_worker: true,
+        invoke_user_worker_ahead_of_assets: true,
       },
-      ...env,
     },
-    {
-      waitUntil() {},
-      passThroughOnException() {},
-    },
-  );
+    log: new Log(LogLevel.ERROR),
+  });
+
+  try {
+    if (d1) {
+      const database = await runtime.getD1Database("DB");
+      const migrationDirectory = new URL("../drizzle/", import.meta.url);
+      const migrations = (await readdir(migrationDirectory))
+        .filter((file) => file.endsWith(".sql"))
+        .sort();
+      for (const migration of migrations) {
+        const sql = await readFile(
+          new URL(migration, migrationDirectory),
+          "utf8",
+        );
+        for (const statement of sql
+          .split("--> statement-breakpoint")
+          .map((candidate) => candidate.trim())
+          .filter(Boolean)) {
+          await database.prepare(statement).run();
+        }
+      }
+    }
+    const response = await runtime.dispatchFetch(url, {
+      method,
+      headers: { accept: "text/html", ...headers },
+    });
+    const body = await response.arrayBuffer();
+    return new Response(body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
+  } finally {
+    await runtime.dispose();
+  }
 }
+
+test("native Worker bindings drive the canonical API, readiness, and SSR from the same scoped D1", async () => {
+  const env = {
+    GUARD_SITE_ID: "dfconnect",
+    GUARD_ENVIRONMENT: "production",
+  };
+  const canonicalUrl =
+    "http://localhost/v1/sites/dfconnect/environments/production/operability";
+  const canonical = await render({
+    url: canonicalUrl,
+    headers: { accept: "application/json" },
+    env,
+    d1: true,
+  });
+  assert.equal(canonical.status, 200);
+  const snapshot = await canonical.json();
+  assert.equal(snapshot.schema, "guard-operability-v1");
+  assert.equal(snapshot.siteId, "dfconnect");
+  assert.equal(snapshot.environment, "production");
+  assert.equal(snapshot.components.length, 8);
+  assert.equal(snapshot.gates.length, 4);
+  assert.equal(snapshot.incidents.active, 0);
+  assert.equal(snapshot.readiness.status, "not_ready");
+  assert.ok(
+    snapshot.components
+      .filter((component) => component.component !== "public_delivery")
+      .every(
+        (component) =>
+          component.state === "unknown" &&
+          component.reasonCodes[0] === "component_policy_missing",
+      ),
+  );
+  assert.ok(snapshot.gates.every((gate) => gate.decision === "deny"));
+
+  const ready = await render({
+    url: "http://localhost/ready",
+    headers: { accept: "application/json" },
+    env,
+    d1: true,
+  });
+  assert.equal(ready.status, 503);
+  assert.deepEqual(await ready.json(), {
+    schema: "guard-readiness-v1",
+    status: "not_ready",
+  });
+
+  const consoleResponse = await render({
+    headers: {
+      "x-guard-site-id": "other-site",
+      "x-guard-environment": "staging",
+    },
+    env,
+    d1: true,
+  });
+  assert.equal(consoleResponse.status, 200);
+  const html = await consoleResponse.text();
+  assert.match(html, /data-environment="production"/u);
+  assert.match(html, /LIVE D1/u);
+  assert.match(html, /D1の最新スナップショットを表示中/u);
+  assert.match(html, /D1 read succeeded/u);
+  assert.doesNotMatch(html, /data-environment="staging"/u);
+  assert.doesNotMatch(html, /最新のリモート証跡は未取得/u);
+});
+
+test("root HEAD preserves the GET response contract without rendering a body", async () => {
+  const [getResponse, headResponse] = await Promise.all([
+    render(),
+    render({ method: "HEAD" }),
+  ]);
+
+  assert.equal(getResponse.status, 200);
+  assert.equal(headResponse.status, getResponse.status);
+  for (const header of [
+    "cache-control",
+    "content-type",
+    "referrer-policy",
+    "x-content-type-options",
+    "x-frame-options",
+    "x-robots-tag",
+  ]) {
+    assert.equal(headResponse.headers.get(header), getResponse.headers.get(header));
+  }
+  assert.match(
+    headResponse.headers.get("content-security-policy") ?? "",
+    /default-src 'none'/u,
+  );
+  assert.equal(await headResponse.text(), "");
+});
 
 test("server-renders the read-only Guard console without presenting remote unknown as healthy", async () => {
   const response = await render();
@@ -71,7 +207,8 @@ test("server-renders the read-only Guard console without presenting remote unkno
   assert.match(html, /通知経路/u);
   assert.match(html, /デプロイ検証/u);
   assert.match(html, /Guard readiness/u);
-  assert.match(html, /LOCAL PASS/u);
+  assert.match(html, /Scheduler heartbeat/u);
+  assert.match(html, /remote heartbeat unavailable/u);
   assert.match(html, /UNKNOWN/u);
   assert.match(html, /DENY/u);
   assert.doesNotMatch(html, /REMOTE HEALTHY|本番は正常|すべて正常/u);
@@ -224,6 +361,12 @@ test("console preserves accessible names, keyboard focus, remote truth, and mobi
     assert.equal(snapshot.evidenceMode, "REMOTE NOT RUN");
     assert.equal(snapshot.components.length, 8);
     assert.ok(snapshot.gates.every((gate) => gate.decision === "DENY"));
-    assert.ok(snapshot.localVerification.tests > 0);
+    assert.equal(snapshot.incidents.active, null);
+    assert.ok(
+      snapshot.components.every(
+        (component) => component.activeIncidentCount === null,
+      ),
+    );
+    assert.equal(snapshot.scheduler.displayState, "UNKNOWN");
   }
 });

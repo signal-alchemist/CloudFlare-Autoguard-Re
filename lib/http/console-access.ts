@@ -267,12 +267,9 @@ export function createConsoleCspNonce(): string {
 export function prepareConsoleHtmlRequest(
   request: Request,
   nonce: string,
-  scope: ConsoleAccessInput["requestedScope"],
 ): Request {
   const headers = new Headers(request.headers);
   headers.set("content-security-policy", consoleContentSecurityPolicy(nonce));
-  headers.set("x-guard-site-id", scope.siteId);
-  headers.set("x-guard-environment", scope.environment);
   for (const sensitive of [
     "authorization",
     "cookie",
@@ -281,6 +278,8 @@ export function prepareConsoleHtmlRequest(
     "oai-authenticated-user-email",
     "oai-authenticated-user-full-name",
     "oai-authenticated-user-full-name-encoding",
+    "x-guard-site-id",
+    "x-guard-environment",
   ]) {
     headers.delete(sensitive);
   }

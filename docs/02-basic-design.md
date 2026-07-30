@@ -428,6 +428,47 @@ HTMLにはrequestごとのnonceを発行し、vinextへ同じCSPをrequest heade
 `private, no-store`、frame拒否、no-referrer、nosniff、機能制限、
 noindexを返す。Access失敗responseにも同じ安全headerを付ける。
 
+### 8.1 canonical operability read path
+
+```text
+GET/HEAD /live
+  -> fixed liveness response（auth/dependency accessなし）
+
+GET/HEAD /ready or /v1/sites/:site/environments/:env/operability
+  -> resolve server-owned scope/auth policy
+  -> verify owner identity
+  -> reject authenticated scope mismatch
+  -> one canonical loader
+       ├─ latest allowed Observation -> pure component evaluation
+       ├─ active Incident count + bounded 100 sanitized items
+       ├─ active freeze only
+       ├─ outbox/delivery sanitized SQL aggregate
+       ├─ deployment identity + post-deploy request/receipt invariant
+       └─ scheduler heartbeat
+  -> fixed 8 component / 4 Gate snapshot
+       ├─ canonical API: 200（valid UNKNOWNを含む）
+       └─ readiness: all checks readyなら200、その他generic 503
+```
+
+D1 interfaceは`prepare/bind/first/all`だけを公開し、`run/batch`を型から除く。
+既存のlive Gate repositoryは最新Observation評価後に`component_verdicts`を
+materializeするため、Console/APIからは呼ばない。read loaderは同じdecoderと
+純粋評価器を再利用し、GET/HEADの前後でD1変更数が増えないことをtestする。
+
+Incident itemはfingerprintを内部で再検証するが、scopeとraw reasonを返さない。
+outbox/deliveryはlifetime rowを列挙せず、status/count/timeだけをscope joinして
+aggregateし、`payload_json`と`payload_digest`をSELECTしない。100件を超える
+active Incidentは総数を維持して`truncated=true`とし、expired freeze履歴は
+active SQL predicateの外に置く。
+
+Server Componentは`cloudflare:workers.env`だけを読む薄いadapterからbindingを
+受け、request headerや静的environment selectorをscope正本にしない。D1等の
+取得失敗時はHTMLを落とさず、Incident件数を`0`とせずUNKNOWN、全Gate DENYの
+unavailable snapshotを表示する。API側は同じ失敗をgeneric `503`へ変換する。
+
+Worker最外層でHEAD response bodyを除去するため、SSRと既存endpointを含む
+`200/401/403/404/405/503`はGET相当のstatus/headerを保ってbody長0となる。
+
 ## 9. Persistence
 
 - D1: sites、checks、observations、receipts、component verdicts、
