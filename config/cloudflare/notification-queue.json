@@ -1,0 +1,9 @@
+{
+  "schema": "guard-notification-queue-plan-v1",
+  "provisioningStatus": "planned",
+  "queue": "cloudflare-guard-notifications",
+  "consumer": {
+    "max_retries": 3,
+    "dead_letter_queue": "cloudflare-guard-notifications-dlq"
+  }
+}

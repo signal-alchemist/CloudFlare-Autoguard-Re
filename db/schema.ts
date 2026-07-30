@@ -154,3 +154,26 @@ export const incidentTimeline = sqliteTable(
     ),
   ],
 );
+
+export const notificationDeliveries = sqliteTable(
+  "notification_deliveries",
+  {
+    deliveryKey: text("delivery_key").primaryKey(),
+    incidentId: text("incident_id")
+      .notNull()
+      .references(() => incidents.incidentId, {
+        onDelete: "restrict",
+        onUpdate: "restrict",
+      }),
+    payloadDigest: text("payload_digest").notNull(),
+    providerCode: text("provider_code").notNull(),
+    deliveredAt: text("delivered_at").notNull(),
+    correlationId: text("correlation_id").notNull(),
+  },
+  (table) => [
+    index("notification_deliveries_incident_time_idx").on(
+      table.incidentId,
+      table.deliveredAt,
+    ),
+  ],
+);
