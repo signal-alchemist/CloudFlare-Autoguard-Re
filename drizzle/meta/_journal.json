@@ -43,6 +43,13 @@
       "when": 1785435609915,
       "tag": "0005_lowly_speedball",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1785437364728,
+      "tag": "0006_sloppy_ikaris",
+      "breakpoints": true
     }
   ]
 }

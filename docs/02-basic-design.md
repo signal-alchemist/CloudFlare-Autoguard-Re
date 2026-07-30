@@ -239,12 +239,47 @@ auth/signatureは`401`、scopeは`403`、request ID conflictは`409`、malformed
 requestは`400`とする。duplicate/restartでは保存済みreasonを返し、checkerを
 再実行しない。
 
+### 7.3 Maintenance request and expiring freeze
+
+現CMSの`maintenance-request-v1`は
+`POST /v1/maintenance-requests`で受付する。requestは9 fieldをstrictに固定し、
+recursive key sortしたcanonical JSONと送信body bytesが完全一致する場合だけ、
+Bearer credentialとraw body HMAC-SHA256を検証する。requestは最大300秒、
+future skew 30秒、`expiresAt - requestedAt`は1〜900秒、受付時点で期限内に
+限定する。
+
+maintenance credentialは`CMS_MAINTENANCE_SERVICE_TOKEN` /
+`CMS_MAINTENANCE_SIGNING_SECRET`のpairを優先する。pairの両方が未定義の場合
+だけ現CMS移行用にGate credential pairへfallbackする。dedicated pairの片側
+だけが定義された場合、空値、不正値、D1/scope binding欠損ではfallbackせず
+generic `503`とする。post-deploy credentialへはfallbackしない。
+
+最初のrequestはD1の1 batchでrequest、期限付きfreeze、両者のlink、signed
+receipt、auditを同時に作る。途中のconstraint/D1 failureではbatch全体を
+rollbackする。同じ`requestId`と同じcanonical digestは保存済みreceiptを返し、
+freeze、receipt、auditを増殖させない。同じ`requestId`でbodyが違う場合は
+`409 idempotency_conflict`とし、別freezeを作らない。
+
+receiptは現CMS互換の
+`maintenance-request-receipt-v1 / maintenance.requested.receipt /
+accepted`だけを返す。初回は`202`、duplicateは同じ署名済みreceiptを`200`で
+返す。auth/signatureは`401`、scopeは`403`、malformed/freshness/expiryは
+`400`、body上限は`413`、content typeは`415`、内部障害はgeneric `503`とする。
+
+freezeはserver受付時刻を`activatedAt`、signed requestの期限を`expiresAt`、
+`requestId`をcorrelation IDとしてappendする。既存のhalf-open判定
+`activatedAt <= now < expiresAt`により期限ちょうどで自然失効し、rowは
+audit evidenceとして残す。このAPIはactivate-onlyであり、release/unfreeze/
+override endpoint、repository method、AI toolを提供しない。将来の人間による
+期限前解除は別Issue、別強認証、別auditとする。
+
 ## 8. API
 
 | Method/path | 用途 |
 |---|---|
 | `POST /v1/signals/cms` | signed CMS ops signal |
 | `POST /compat/v1/gate` | current CMS single-endpoint signal alias |
+| `POST /v1/maintenance-requests` | signed expiring maintenance freeze request |
 | `GET /v1/sites/:siteId/environments/:env/operability` | canonical state |
 | `POST /v1/gate-evaluations` | strict OperationContext gate |
 | `GET /v1/incidents` | sanitized incident list |
@@ -272,7 +307,8 @@ noindexを返す。Access失敗responseにも同じ安全headerを付ける。
 
 - D1: sites、checks、observations、receipts、component verdicts、
   deployment runtime identities、post-deploy requests/receipts、incidents、
-  timeline、freezes、jobs、outbox/inbox、audit
+  timeline、maintenance requests/receipts/freeze links、freezes、jobs、
+  outbox/inbox、audit
 - private R2: failure screenshot等のlarge sanitized evidence
 - Queue/DLQ: check jobとalert deliveryを分離
 

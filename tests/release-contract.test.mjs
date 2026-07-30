@@ -39,7 +39,7 @@ test("private Sites release package has an opaque project binding and complete r
     .sort();
   assert.deepEqual(
     migrations.map((name) => name.slice(0, 4)),
-    ["0000", "0001", "0002", "0003", "0004", "0005"],
+    ["0000", "0001", "0002", "0003", "0004", "0005", "0006"],
   );
 
   const worker = await readFile(new URL("worker/index.ts", root), "utf8");
@@ -49,4 +49,15 @@ test("private Sites release package has an opaque project binding and complete r
   assert.match(worker, /service_unavailable/u);
   assert.match(worker, /async scheduled/u);
   assert.match(worker, /runDfconnectScheduledPublicDelivery/u);
+  assert.match(worker, /CMS_MAINTENANCE_SERVICE_TOKEN/u);
+  assert.match(worker, /CMS_MAINTENANCE_SIGNING_SECRET/u);
+  assert.match(worker, /selectMaintenanceCredentialPair/u);
+  assert.match(worker, /\/v1\/maintenance-requests/u);
+  const maintenanceStart = worker.indexOf("function maintenanceDependencies");
+  const maintenanceEnd = worker.indexOf("function handleGateRequest", maintenanceStart);
+  assert.ok(maintenanceStart >= 0 && maintenanceEnd > maintenanceStart);
+  const maintenanceWiring = worker.slice(maintenanceStart, maintenanceEnd);
+  assert.match(maintenanceWiring, /fallbackServiceToken: env\.CMS_GATE_SERVICE_TOKEN/u);
+  assert.match(maintenanceWiring, /fallbackSigningSecret: env\.CMS_GATE_SIGNING_SECRET/u);
+  assert.doesNotMatch(maintenanceWiring, /CMS_POST_DEPLOY/u);
 });

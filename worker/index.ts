@@ -5,11 +5,18 @@ import { resolveOperationalPolicySet } from "../config/sites/dfconnect.operation
 import {
   createCloudflareWorkerPublicDeliveryProbePorts,
 } from "../lib/adapters/cloudflare-worker-public-delivery.ts";
+import {
+  selectMaintenanceCredentialPair,
+} from "../lib/contracts/maintenance-request.ts";
 import { handleCompatGateRequest } from "../lib/http/compat-gate.ts";
 import {
   routeCmsSignalIngress,
   type CmsSignalHttpDependencies,
 } from "../lib/http/cms-signal.ts";
+import {
+  handleMaintenanceRequest,
+  type MaintenanceRequestHttpDependencies,
+} from "../lib/http/maintenance-request.ts";
 import { handlePostDeployRequest } from "../lib/http/post-deploy.ts";
 import {
   applyConsoleSecurityHeaders,
@@ -31,6 +38,7 @@ import {
 import {
   D1DeploymentRuntimeIdentityRepository,
 } from "../lib/repositories/deployment-runtime-identities.ts";
+import { D1MaintenanceRequestRepository } from "../lib/repositories/maintenance-requests.ts";
 import { D1PostDeployRepository } from "../lib/repositories/post-deploy.ts";
 import type { D1DatabasePort } from "../lib/repositories/observations.ts";
 import {
@@ -53,6 +61,8 @@ interface Env {
   CMS_SIGNAL_SIGNING_SECRET?: string;
   CMS_POST_DEPLOY_SERVICE_TOKEN?: string;
   CMS_POST_DEPLOY_SIGNING_SECRET?: string;
+  CMS_MAINTENANCE_SERVICE_TOKEN?: string;
+  CMS_MAINTENANCE_SIGNING_SECRET?: string;
   CONSOLE_AUTH_MODE?:
     | "cloudflare-access"
     | "sites-private"
@@ -111,7 +121,10 @@ function unavailableJson(): Response {
     { error: "service_unavailable" },
     {
       status: 503,
-      headers: { "cache-control": "no-store" },
+      headers: {
+        "cache-control": "no-store",
+        "x-content-type-options": "nosniff",
+      },
     },
   );
 }
@@ -145,6 +158,35 @@ function cmsSignalDependencies(
     ],
     database: env.DB as unknown as D1DatabasePort,
     clock: Date.now,
+  };
+}
+
+function maintenanceDependencies(
+  env: Env,
+): MaintenanceRequestHttpDependencies | null {
+  if (!env.GUARD_SITE_ID || !env.GUARD_ENVIRONMENT || !env.DB) return null;
+  const pair = selectMaintenanceCredentialPair({
+    dedicatedServiceToken: env.CMS_MAINTENANCE_SERVICE_TOKEN,
+    dedicatedSigningSecret: env.CMS_MAINTENANCE_SIGNING_SECRET,
+    fallbackServiceToken: env.CMS_GATE_SERVICE_TOKEN,
+    fallbackSigningSecret: env.CMS_GATE_SIGNING_SECRET,
+  });
+  if (pair === null) return null;
+  return {
+    credential: {
+      credentialId: `cms-maintenance-${env.GUARD_ENVIRONMENT}-v1`,
+      siteId: env.GUARD_SITE_ID,
+      environment: env.GUARD_ENVIRONMENT,
+      serviceToken: pair.serviceToken,
+      signingSecret: pair.signingSecret,
+      maxAgeSeconds: 300,
+      maxFutureSkewSeconds: 30,
+      maxDurationSeconds: 900,
+    },
+    repository: new D1MaintenanceRequestRepository(
+      env.DB as unknown as D1DatabasePort,
+    ),
+    clockSeconds: () => Math.floor(Date.now() / 1_000),
   };
 }
 
@@ -287,6 +329,13 @@ const worker = {
       gate: (gateRequest) => handleGateRequest(gateRequest, env),
     });
     if (cmsIngress !== null) return cmsIngress;
+
+    if (url.pathname === "/v1/maintenance-requests") {
+      const dependencies = maintenanceDependencies(env);
+      return dependencies === null
+        ? unavailableJson()
+        : handleMaintenanceRequest(request, dependencies);
+    }
 
     if (url.pathname === "/v1/post-deploy-checks") {
       if (

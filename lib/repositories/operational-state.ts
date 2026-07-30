@@ -127,7 +127,7 @@ const safeIdentifier = /^[A-Za-z0-9_.:-]+$/u;
 const observationId = /^obs_[a-f0-9]{32}$/u;
 const evidenceId = /^ev_[a-f0-9]{32}$/u;
 const maximumLatestObservationRows = 4_096;
-const maximumUnreleasedFreezeRows = 1_024;
+const maximumActiveFreezeRows = 1_024;
 
 function invalid(code: string): never {
   throw new ContractError(code);
@@ -513,7 +513,7 @@ const selectVerdicts = `
   ORDER BY component
 `;
 
-const selectUnreleasedFreezes = `
+const selectActiveFreezes = `
   SELECT
     freeze_id, site_id, environment, reason_code, correlation_id,
     activated_at, expires_at, released_at
@@ -521,8 +521,10 @@ const selectUnreleasedFreezes = `
   WHERE site_id = ?1
     AND environment = ?2
     AND released_at IS NULL
+    AND activated_at <= ?3
+    AND expires_at > ?3
   ORDER BY activated_at, freeze_id
-  LIMIT ${maximumUnreleasedFreezeRows + 1}
+  LIMIT ${maximumActiveFreezeRows + 1}
 `;
 
 export class D1OperationalStateRepository
@@ -653,14 +655,15 @@ implements OperationalStateRepository {
     nowMs: number;
   }): Promise<boolean> {
     this.assertScope(input);
+    const now = new Date(input.nowMs).toISOString();
     const result = await this.database
-      .prepare(selectUnreleasedFreezes)
-      .bind(input.siteId, input.environment)
+      .prepare(selectActiveFreezes)
+      .bind(input.siteId, input.environment, now)
       .all<FreezeRow>();
     if (
       !result.success ||
       !Array.isArray(result.results) ||
-      result.results.length > maximumUnreleasedFreezeRows
+      result.results.length > maximumActiveFreezeRows
     ) {
       throw new Error("operational_freeze_read_failed");
     }

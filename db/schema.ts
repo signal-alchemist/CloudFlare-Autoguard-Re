@@ -111,6 +111,63 @@ export const freezes = sqliteTable(
   ],
 );
 
+export const maintenanceRequests = sqliteTable(
+  "maintenance_requests",
+  {
+    requestId: text("request_id").primaryKey(),
+    requestDigest: text("request_digest").notNull(),
+    siteId: text("site_id").notNull(),
+    environment: text("environment", {
+      enum: ["staging", "production"],
+    }).notNull(),
+    requestedBy: text("requested_by").notNull(),
+    reasonCode: text("reason_code").notNull(),
+    requestedAt: integer("requested_at").notNull(),
+    expiresAt: integer("expires_at").notNull(),
+    credentialId: text("credential_id").notNull(),
+    status: text("status", { enum: ["accepted"] }).notNull(),
+    recordedAt: integer("recorded_at").notNull(),
+  },
+  (table) => [
+    index("maintenance_requests_scope_time_idx").on(
+      table.siteId,
+      table.environment,
+      table.requestedAt,
+    ),
+  ],
+);
+
+export const maintenanceRequestFreezes = sqliteTable(
+  "maintenance_request_freezes",
+  {
+    requestId: text("request_id")
+      .primaryKey()
+      .references(() => maintenanceRequests.requestId, {
+        onDelete: "restrict",
+        onUpdate: "restrict",
+      }),
+    freezeId: text("freeze_id")
+      .notNull()
+      .unique()
+      .references(() => freezes.freezeId, {
+        onDelete: "restrict",
+        onUpdate: "restrict",
+      }),
+  },
+);
+
+export const maintenanceReceipts = sqliteTable("maintenance_receipts", {
+  requestId: text("request_id")
+    .primaryKey()
+    .references(() => maintenanceRequests.requestId, {
+      onDelete: "restrict",
+      onUpdate: "restrict",
+    }),
+  responseJson: text("response_json").notNull(),
+  responseDigest: text("response_digest").notNull(),
+  recordedAt: integer("recorded_at").notNull(),
+});
+
 export const signalReceipts = sqliteTable("signal_receipts", {
   receiptId: text("receipt_id").primaryKey(),
   idempotencyKey: text("idempotency_key").notNull().unique(),

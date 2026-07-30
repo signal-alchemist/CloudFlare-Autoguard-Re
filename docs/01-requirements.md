@@ -152,6 +152,16 @@ canonical APIへ分離する。
 - 色だけに依存せず状態ラベルとreasonを表示する。
 - MVPはread-onlyとし、危険操作UIとaudit削除UIを置かない。
 
+### GRD-F-011 メンテナンス停止
+
+- 現行CMSの署名済み`maintenance-request-v1`を専用endpointで受付する。
+- site/environment、依頼時刻、最大15分の期限をserver policyで検証する。
+- request、期限付きfreeze、署名receipt、auditを原子的かつ冪等に保存する。
+- active freeze中はCMS互換Gateをdenyし、期限ちょうどで自然失効させる。
+- 期限切れfreezeは監査履歴として保持し、Gateの有効行読取上限へ含めない。
+- このendpointはactivate-onlyとし、AI用または無認証の解除・延長・overrideを
+  提供しない。
+
 ## 5. 非機能・セキュリティ要件
 
 - contact name/email/body/IP、Cookie、Authorization、Turnstile token、
