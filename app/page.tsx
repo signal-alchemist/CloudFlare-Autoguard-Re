@@ -1,15 +1,18 @@
 import type { Metadata } from "next";
-import { SkeletonPreview } from "./_sites-preview/SkeletonPreview";
+import { GuardConsole } from "./GuardConsole";
+import { dashboardSnapshots } from "../lib/ui/dashboard-model";
 
 export const metadata: Metadata = {
-  title: "Your site is taking shape",
+  title: "CloudFlare Guard | DFConnect",
   description:
-    "Your first version will appear here automatically when it’s ready.",
-  other: {
-    "codex-preview": "development",
-  },
+    "DFConnectの公開配信、CMS、問い合わせ、通知、デプロイを可視化するread-only運用コンソール。",
 };
 
 export default function Home() {
-  return <SkeletonPreview />;
+  return (
+    <GuardConsole
+      snapshots={dashboardSnapshots}
+      productName="CloudFlare Guard"
+    />
+  );
 }

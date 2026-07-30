@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
@@ -13,12 +13,29 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Starter Project",
-  description: "A clean starting point for building your site.",
+  title: "CloudFlare Guard | DFConnect",
+  description:
+    "DFConnect CloudFlare-CMSの状態・エラー・Gateを可視化するread-only運用コンソール。",
   icons: {
     icon: "/favicon.svg",
     shortcut: "/favicon.svg",
   },
+  robots: {
+    index: false,
+    follow: false,
+  },
+  openGraph: {
+    title: "CloudFlare Guard | DFConnect",
+    description: "Operational truth, without false green.",
+    images: ["/og.png"],
+  },
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  themeColor: "#07111f",
+  colorScheme: "dark",
 };
 
 export default function RootLayout({
@@ -27,10 +44,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
-      >
+    <html lang="ja">
+      <body className={`${geistSans.variable} ${geistMono.variable}`}>
         {children}
       </body>
     </html>

@@ -1,11 +1,8 @@
 import assert from "node:assert/strict";
-import { access, readFile, readdir } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import test from "node:test";
 
-const developmentPreviewMeta =
-  /<meta(?=[^>]*\bname=["']codex-preview["'])(?=[^>]*\bcontent=["']development["'])[^>]*>/i;
 const templateRoot = new URL("../", import.meta.url);
-const previewRoot = new URL("../app/_sites-preview/", import.meta.url);
 
 async function render() {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
@@ -28,62 +25,56 @@ async function render() {
   );
 }
 
-test("server-renders the starter loading skeleton", async () => {
+test("server-renders the read-only Guard console without presenting remote unknown as healthy", async () => {
   const response = await render();
   assert.equal(response.status, 200);
-  assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
+  assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/iu);
 
   const html = await response.text();
-  assert.match(html, developmentPreviewMeta);
-  assert.match(html, /<title>Your site is taking shape<\/title>/i);
-  assert.match(html, /Building your site/);
-  assert.match(html, /Your site is taking shape/);
-  assert.match(
-    html,
-    /Your first version will appear here automatically when it’s ready\./,
-  );
-  assert.doesNotMatch(html, /Codex/);
-  assert.match(html, /react-loading-skeleton/);
-  assert.match(html, /role="status"/);
-});
-
-test("keeps the loading skeleton scoped and disposable", async () => {
-  const [preview, css, page, layout, packageJson, files] = await Promise.all([
-    readFile(new URL("SkeletonPreview.tsx", previewRoot), "utf8"),
-    readFile(new URL("preview.css", previewRoot), "utf8"),
-    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../package.json", import.meta.url), "utf8"),
-    readdir(previewRoot),
-  ]);
-
-  assert.deepEqual(files.sort(), ["SkeletonPreview.tsx", "preview.css"]);
-  assert.match(preview, /from "react-loading-skeleton"/);
-  assert.match(preview, /baseColor="#eceae7"/);
-  assert.match(preview, /highlightColor="#f9f8f6"/);
-  assert.match(preview, /duration=\{2\.8\}/);
-  assert.match(preview, /sites-skeleton-search-placeholder/);
-  assert.match(packageJson, /"react-loading-skeleton": "3\.5\.0"/);
-
-  const shellIndex = preview.indexOf('className="sites-skeleton-shell"');
-  const statusIndex = preview.indexOf('className="sites-skeleton-status"');
-  assert.ok(shellIndex >= 0 && statusIndex > shellIndex);
-  assert.match(css, /position:\s*fixed/);
-  assert.match(css, /inset:\s*0/);
-  assert.match(css, /opacity:\s*0\.52/);
-  assert.match(css, /prefers-reduced-motion:\s*reduce/);
-  assert.doesNotMatch(css, /#020617|canvas|pets|progress/i);
+  assert.match(html, /<html[^>]*lang="ja"/iu);
+  assert.match(html, /<title>CloudFlare Guard \| DFConnect<\/title>/iu);
+  assert.match(html, /data-app="cloudflare-guard"/u);
+  assert.match(html, /運用ステータス/u);
+  assert.match(html, /REMOTE NOT RUN/u);
+  assert.match(html, /最新のリモート証跡は未取得/u);
+  assert.equal((html.match(/data-component=/gu) ?? []).length, 8);
+  assert.equal((html.match(/data-gate=/gu) ?? []).length, 4);
+  assert.match(html, /public_delivery/u);
+  assert.match(html, /autoguard_control_plane/u);
+  assert.match(html, /contentPublish/u);
+  assert.match(html, /destructiveRecovery/u);
+  assert.match(html, /インシデント/u);
+  assert.match(html, /通知経路/u);
+  assert.match(html, /デプロイ検証/u);
+  assert.match(html, /Guard readiness/u);
+  assert.match(html, /LOCAL PASS/u);
+  assert.match(html, /UNKNOWN/u);
+  assert.match(html, /DENY/u);
+  assert.doesNotMatch(html, /REMOTE HEALTHY|本番は正常|すべて正常/u);
   assert.doesNotMatch(
-    preview,
-    /loading-spinner|status-mark|status-progress|canvas|cookie|random/i,
+    html,
+    /rollback実行|freeze解除|インシデント削除|監査ログ削除/u,
   );
+  assert.doesNotMatch(html, /codex-preview|react-loading-skeleton/u);
 
-  assert.match(page, /export const metadata:\s*Metadata/);
-  assert.match(page, /"codex-preview": "development"/);
-  assert.match(page, /<SkeletonPreview \/>/);
-  assert.match(layout, /title:\s*"Starter Project"/);
-  assert.doesNotMatch(layout, /codex-preview|_sites-preview|themeColor|\bViewport\b/);
-  assert.doesNotMatch(css, /(^|\s)(html|body)\s*\{/m);
+  const packageJson = await readFile(
+    new URL("../package.json", import.meta.url),
+    "utf8",
+  );
+  assert.doesNotMatch(packageJson, /react-loading-skeleton/u);
+  await assert.rejects(
+    access(new URL("../app/_sites-preview", import.meta.url)),
+  );
+  await access(new URL("../public/favicon.svg", import.meta.url));
+  await access(new URL("../public/og.png", import.meta.url));
+
+  const page = await readFile(
+    new URL("../app/page.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.doesNotMatch(page, /SkeletonPreview|codex-preview/u);
+  assert.match(page, /CloudFlare Guard/u);
+  assert.match(page, /read-only/u);
 
   await assert.rejects(
     access(new URL("public/_sites-preview", templateRoot)),
