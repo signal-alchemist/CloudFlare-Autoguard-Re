@@ -64,7 +64,7 @@ export interface Observation {
   reasonCode: string;
   observedAt: string;
   validUntil: string;
-  source: "cms_ops_signal";
+  source: "cms_ops_signal" | "public_probe";
   scope: string;
   evidenceId: string;
   correlationId: string;
