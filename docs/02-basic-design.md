@@ -200,6 +200,10 @@ raw response、contact data、secretをD1/R2/Queueへ保存しない。
 ```
 
 desktop/mobileで情報順を維持し、状態は色、icon、text labelを併用する。
+各component/gate/panelは見出しとの明示的なARIA関連を持ち、statusは可視textと
+accessible nameを併用する。skip link、44px以上の操作target、明示focus ring、
+reduced-motionを提供する。desktop sidebarを隠す幅では同じanchor順のmobile
+navigationを出し、`REMOTE NOT RUN`やfreshnessを小画面でも非表示にしない。
 
 ## 11. Deployment
 

@@ -12,6 +12,7 @@ interface GuardConsoleProps {
 const navigation = [
   ["overview", "Overview"],
   ["components", "Components"],
+  ["gates", "Gates"],
   ["incidents", "Incidents"],
   ["deployments", "Deployments"],
 ] as const;
@@ -36,7 +37,11 @@ function StatusBadge({
 }) {
   const tone = status.toLowerCase().replaceAll("_", "-");
   return (
-    <span className={`status-badge status-${tone}`} data-compact={compact}>
+    <span
+      className={`status-badge status-${tone}`}
+      data-compact={compact}
+      aria-label={`状態: ${status.replaceAll("_", " ")}`}
+    >
       <span className="status-dot" aria-hidden="true" />
       {status.replaceAll("_", " ")}
     </span>
@@ -44,10 +49,12 @@ function StatusBadge({
 }
 
 function SectionHeading({
+  id,
   eyebrow,
   title,
   description,
 }: {
+  id: string;
   eyebrow: string;
   title: string;
   description: string;
@@ -56,7 +63,7 @@ function SectionHeading({
     <header className="section-heading">
       <div>
         <p className="eyebrow">{eyebrow}</p>
-        <h2>{title}</h2>
+        <h2 id={id}>{title}</h2>
       </div>
       <p>{description}</p>
     </header>
@@ -96,7 +103,7 @@ export function GuardConsole({
           </div>
         </div>
 
-        <nav>
+        <nav aria-label="デスクトップナビゲーション">
           <p className="nav-label">Monitor</p>
           <ul>
             {navigation.map(([id, label], index) => (
@@ -136,7 +143,10 @@ export function GuardConsole({
             <small>server scoped</small>
           </div>
           <div className="topbar-actions">
-            <span className="remote-chip">
+            <span
+              className="remote-chip"
+              aria-label="リモート証跡: REMOTE NOT RUN"
+            >
               <span aria-hidden="true">●</span> REMOTE NOT RUN
             </span>
             <button
@@ -150,7 +160,17 @@ export function GuardConsole({
           </div>
         </header>
 
-        <main id="main-content">
+        <nav className="mobile-nav" aria-label="モバイルナビゲーション">
+          <ul>
+            {navigation.map(([id, label]) => (
+              <li key={id}>
+                <a href={`#${id}`}>{label}</a>
+              </li>
+            ))}
+          </ul>
+        </nav>
+
+        <main id="main-content" tabIndex={-1}>
           <section className="hero" id="overview" aria-labelledby="page-title">
             <div className="hero-copy">
               <p className="eyebrow">
@@ -162,7 +182,12 @@ export function GuardConsole({
                 不明な状態は正常に見せず、運用開始前の不足をそのまま表示します。
               </p>
             </div>
-            <div className="hero-state" role="status" aria-live="polite">
+            <div
+              className="hero-state"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+            >
               <span className="hero-state-label">CURRENT OPERABILITY</span>
               <strong>{snapshot.operability}</strong>
               <span>{snapshot.operabilityLabel}</span>
@@ -229,16 +254,18 @@ export function GuardConsole({
             aria-labelledby="components-title"
           >
             <SectionHeading
+              id="components-title"
               eyebrow="01 / OPERABILITY"
               title="8 Components"
               description="CMSとGuardの責務を混ぜず、現在値・鮮度・証跡をコンポーネント単位で確認します。"
             />
-            <div className="component-grid" id="components-title">
+            <div className="component-grid">
               {snapshot.components.map((component, index) => (
                 <article
                   className="component-card"
                   data-component={component.id}
                   key={component.id}
+                  aria-labelledby={`component-title-${component.id}`}
                 >
                   <div className="component-card-top">
                     <span className="component-number">
@@ -251,7 +278,9 @@ export function GuardConsole({
                       {component.symbol}
                     </span>
                     <div>
-                      <h3>{component.label}</h3>
+                      <h3 id={`component-title-${component.id}`}>
+                        {component.label}
+                      </h3>
                       <code>{component.id}</code>
                     </div>
                   </div>
@@ -275,13 +304,18 @@ export function GuardConsole({
             </div>
           </section>
 
-          <section className="content-section gate-section" aria-labelledby="gates-title">
+          <section
+            className="content-section gate-section"
+            id="gates"
+            aria-labelledby="gates-title"
+          >
             <SectionHeading
+              id="gates-title"
               eyebrow="02 / DECISION"
               title="4 Operation Gates"
               description="required componentがひとつでもmissing・stale・非healthyなら、操作は許可しません。"
             />
-            <div className="gate-table" id="gates-title">
+            <div className="gate-table">
               <div className="gate-table-head" aria-hidden="true">
                 <span>Operation</span>
                 <span>Required component</span>
@@ -289,13 +323,18 @@ export function GuardConsole({
                 <span>Freshness</span>
               </div>
               {snapshot.gates.map((gate) => (
-                <article className="gate-row" data-gate={gate.id} key={gate.id}>
+                <article
+                  className="gate-row"
+                  data-gate={gate.id}
+                  key={gate.id}
+                  aria-labelledby={`gate-title-${gate.id}`}
+                >
                   <div>
                     <span className="gate-icon" aria-hidden="true">
                       {gate.symbol}
                     </span>
                     <div>
-                      <h3>{gate.label}</h3>
+                      <h3 id={`gate-title-${gate.id}`}>{gate.label}</h3>
                       <code>{gate.id}</code>
                     </div>
                   </div>
@@ -308,11 +347,14 @@ export function GuardConsole({
           </section>
 
           <section className="split-section" id="incidents">
-            <article className="panel incident-panel">
+            <article
+              className="panel incident-panel"
+              aria-labelledby="incidents-title"
+            >
               <div className="panel-head">
                 <div>
                   <p className="eyebrow">03 / RESPONSE</p>
-                  <h2>インシデント</h2>
+                  <h2 id="incidents-title">インシデント</h2>
                 </div>
                 <StatusBadge status="REMOTE_NOT_RUN" compact />
               </div>
@@ -336,11 +378,14 @@ export function GuardConsole({
               </div>
             </article>
 
-            <article className="panel route-panel">
+            <article
+              className="panel route-panel"
+              aria-labelledby="notification-title"
+            >
               <div className="panel-head">
                 <div>
                   <p className="eyebrow">04 / DELIVERY</p>
-                  <h2>通知経路</h2>
+                  <h2 id="notification-title">通知経路</h2>
                 </div>
                 <StatusBadge status={snapshot.notification.state} compact />
               </div>
@@ -363,11 +408,14 @@ export function GuardConsole({
           </section>
 
           <section className="split-section" id="deployments">
-            <article className="panel deploy-panel">
+            <article
+              className="panel deploy-panel"
+              aria-labelledby="deploy-title"
+            >
               <div className="panel-head">
                 <div>
                   <p className="eyebrow">05 / RELEASE</p>
-                  <h2>デプロイ検証</h2>
+                  <h2 id="deploy-title">デプロイ検証</h2>
                 </div>
                 <StatusBadge status={snapshot.deploy.state} compact />
               </div>
@@ -388,11 +436,14 @@ export function GuardConsole({
               <p className="panel-note">{snapshot.deploy.note}</p>
             </article>
 
-            <article className="panel readiness-panel">
+            <article
+              className="panel readiness-panel"
+              aria-labelledby="readiness-title"
+            >
               <div className="panel-head">
                 <div>
                   <p className="eyebrow">06 / SELF CHECK</p>
-                  <h2>Guard readiness</h2>
+                  <h2 id="readiness-title">Guard readiness</h2>
                 </div>
                 <StatusBadge status={snapshot.readiness.state} compact />
               </div>

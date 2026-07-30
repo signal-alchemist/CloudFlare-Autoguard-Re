@@ -136,3 +136,94 @@ test("worker rejects spoofed console identity before rendering or leaking scope"
     /attacker|other-site|staging|secret-canary|guard-production-audience/u,
   );
 });
+
+test("console preserves accessible names, keyboard focus, remote truth, and mobile information order", async () => {
+  const response = await render();
+  assert.equal(response.status, 200);
+  const html = await response.text();
+
+  assert.match(
+    html,
+    /<nav(?=[^>]*aria-label="デスクトップナビゲーション")[^>]*>/u,
+  );
+  assert.match(
+    html,
+    /<nav(?=[^>]*class="mobile-nav")(?=[^>]*aria-label="モバイルナビゲーション")[^>]*>/u,
+  );
+  assert.match(html, /<main[^>]*id="main-content"[^>]*tabindex="-1"/u);
+  assert.match(html, /<h2[^>]*id="components-title"[^>]*>8 Components<\/h2>/u);
+  assert.match(html, /<h2[^>]*id="gates-title"[^>]*>4 Operation Gates<\/h2>/u);
+  assert.equal(
+    (html.match(/aria-labelledby="component-title-[^"]+"/gu) ?? []).length,
+    8,
+  );
+  assert.equal(
+    (html.match(/aria-labelledby="gate-title-[^"]+"/gu) ?? []).length,
+    4,
+  );
+  for (const panelTitle of [
+    "incidents-title",
+    "notification-title",
+    "deploy-title",
+    "readiness-title",
+  ]) {
+    assert.match(
+      html,
+      new RegExp(`aria-labelledby="${panelTitle}"`, "u"),
+    );
+    assert.match(html, new RegExp(`id="${panelTitle}"`, "u"));
+  }
+  assert.match(
+    html,
+    /role="status" aria-live="polite" aria-atomic="true"/u,
+  );
+  assert.match(html, /aria-label="状態: UNKNOWN"/u);
+  assert.match(html, /aria-label="状態: DENY"/u);
+  assert.match(html, /aria-label="リモート証跡: REMOTE NOT RUN"/u);
+
+  const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  assert.match(
+    css,
+    /:where\(a,\s*button,\s*summary\):focus-visible\s*\{/u,
+  );
+  assert.match(css, /min-height:\s*44px/u);
+  for (const breakpoint of [1180, 860, 560]) {
+    assert.ok(css.includes(`@media (max-width: ${breakpoint}px)`));
+  }
+  assert.match(css, /\.mobile-nav\s*\{[^}]*display:\s*none/su);
+  const tabletCss = css.slice(
+    css.indexOf("@media (max-width: 860px)"),
+    css.indexOf("@media (max-width: 560px)"),
+  );
+  assert.match(tabletCss, /\.mobile-nav\s*\{[^}]*display:\s*flex/su);
+  assert.match(
+    tabletCss,
+    /\.freshness-value\s*\{[^}]*grid-row:\s*3/su,
+  );
+  const phoneCss = css.slice(
+    css.indexOf("@media (max-width: 560px)"),
+    css.indexOf("@media (prefers-reduced-motion: reduce)"),
+  );
+  assert.doesNotMatch(
+    phoneCss,
+    /\.remote-chip\s*\{[^}]*display:\s*none/su,
+  );
+  const reducedMotionCss = css.slice(
+    css.indexOf("@media (prefers-reduced-motion: reduce)"),
+  );
+  assert.match(reducedMotionCss, /scroll-behavior:\s*auto\s*!important/u);
+  assert.match(reducedMotionCss, /transition[^:]*:\s*none\s*!important/u);
+  assert.match(reducedMotionCss, /transform:\s*none\s*!important/u);
+  assert.match(css, /--muted:\s*#566170/u);
+
+  const { dashboardSnapshots } = await import(
+    "../lib/ui/dashboard-model.ts"
+  );
+  for (const snapshot of Object.values(dashboardSnapshots)) {
+    assert.equal(snapshot.operability, "UNKNOWN");
+    assert.equal(snapshot.evidenceMode, "REMOTE NOT RUN");
+    assert.equal(snapshot.components.length, 8);
+    assert.ok(snapshot.gates.every((gate) => gate.decision === "DENY"));
+    assert.ok(snapshot.localVerification.tests > 0);
+  }
+});

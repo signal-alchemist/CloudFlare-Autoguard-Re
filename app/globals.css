@@ -10,7 +10,7 @@
   --paper-strong: #fbfaf6;
   --paper-muted: #e5e3dc;
   --text: #142033;
-  --muted: #6f7885;
+  --muted: #566170;
   --line: #d5d4ce;
   --blue: #2776ff;
   --blue-soft: #e9f0ff;
@@ -51,6 +51,15 @@ summary {
 
 button {
   font: inherit;
+}
+
+:where(a, button, summary):focus-visible {
+  outline: 3px solid #145dcc;
+  outline-offset: 3px;
+}
+
+:where(button, summary, .mobile-nav a) {
+  min-height: 44px;
 }
 
 code,
@@ -154,7 +163,7 @@ code,
 
 .nav-label {
   margin: 0 12px 10px;
-  color: #627089;
+  color: #8b99ad;
   font-family: var(--font-geist-mono), monospace;
   font-size: 9px;
   letter-spacing: 0.16em;
@@ -254,28 +263,31 @@ code,
 
 .environment-switch {
   display: inline-flex;
-  padding: 3px;
+  min-height: 38px;
+  align-items: center;
+  gap: 9px;
+  padding: 5px 10px;
   border: 1px solid var(--line);
   border-radius: 9px;
   background: var(--paper-muted);
 }
 
-.environment-switch button {
-  min-width: 94px;
-  padding: 7px 12px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
+.environment-switch > span {
+  color: var(--ink-950);
   font-size: 11px;
   font-weight: 750;
 }
 
-.environment-switch button[aria-pressed="true"] {
-  background: var(--paper-strong);
-  color: var(--ink-950);
-  box-shadow: 0 1px 4px rgba(7, 17, 31, 0.12);
+.environment-switch > small {
+  color: var(--muted);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 8px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.mobile-nav {
+  display: none;
 }
 
 .topbar-actions {
@@ -339,7 +351,7 @@ main {
 
 .eyebrow {
   margin: 0 0 8px;
-  color: #718096;
+  color: #586779;
   font-size: 9px;
   font-weight: 750;
   letter-spacing: 0.16em;
@@ -486,7 +498,7 @@ h1 {
 .metric-card small {
   display: block;
   margin-top: 4px;
-  color: #8a9199;
+  color: #626c78;
   font-size: 9px;
 }
 
@@ -572,7 +584,7 @@ h1 {
 }
 
 .component-number {
-  color: #a0a6ae;
+  color: #626c78;
   font-family: var(--font-geist-mono), monospace;
   font-size: 9px;
 }
@@ -658,7 +670,7 @@ h1 {
 .gate-row code {
   display: block;
   overflow: hidden;
-  color: #89919c;
+  color: #586575;
   font-size: 8px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -694,7 +706,7 @@ h1 {
 }
 
 .component-card dt {
-  color: #9299a2;
+  color: #626c78;
 }
 
 .component-card dd {
@@ -737,7 +749,7 @@ h1 {
   padding: 0 16px;
   border-bottom: 1px solid var(--line);
   background: #e9e8e2;
-  color: #7c848f;
+  color: #5f6974;
   font-family: var(--font-geist-mono), monospace;
   font-size: 8px;
   letter-spacing: 0.08em;
@@ -846,7 +858,7 @@ h1 {
   align-items: center;
   padding: 10px 4px;
   border-right: 1px solid var(--line);
-  color: #8a929d;
+  color: #626c78;
   font-family: var(--font-geist-mono), monospace;
   font-size: 7px;
 }
@@ -965,7 +977,7 @@ h1 {
   place-items: center;
   border-radius: 50%;
   background: #e5e6e4;
-  color: #707985;
+  color: #586575;
   font-size: 10px;
 }
 
@@ -1063,10 +1075,37 @@ h1 {
   .environment-switch {
     order: 3;
     width: 100%;
+    justify-content: space-between;
   }
 
-  .environment-switch button {
-    flex: 1;
+  .mobile-nav {
+    display: flex;
+    overflow-x: auto;
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--line);
+    background: var(--paper-strong);
+    scrollbar-width: thin;
+  }
+
+  .mobile-nav ul {
+    display: flex;
+    min-width: max-content;
+    margin: 0;
+    padding: 0;
+    gap: 5px;
+    list-style: none;
+  }
+
+  .mobile-nav a {
+    display: inline-flex;
+    align-items: center;
+    padding: 0 12px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    color: var(--ink-900);
+    font-size: 11px;
+    font-weight: 700;
+    text-decoration: none;
   }
 
   main {
@@ -1105,9 +1144,9 @@ h1 {
   }
 
   .freshness-value {
-    grid-column: 2;
-    grid-row: 2;
-    text-align: right;
+    grid-column: 1 / -1;
+    grid-row: 3;
+    text-align: left;
   }
 
   .split-section {
@@ -1116,12 +1155,14 @@ h1 {
 }
 
 @media (max-width: 560px) {
-  .remote-chip {
-    display: none;
+  .topbar-actions {
+    width: 100%;
+    justify-content: space-between;
+    margin-left: 0;
   }
 
-  .topbar-actions {
-    margin-left: auto;
+  .remote-chip {
+    min-height: 36px;
   }
 
   .component-grid,
@@ -1175,6 +1216,13 @@ h1 {
   *::before,
   *::after {
     scroll-behavior: auto !important;
-    transition-duration: 0.01ms !important;
+    animation: none !important;
+    transition: none !important;
+  }
+
+  .component-card:hover,
+  .metric-card:hover,
+  .refresh-button:hover {
+    transform: none !important;
   }
 }

@@ -68,7 +68,7 @@ export interface DashboardSnapshot {
     }[];
   };
   localVerification: {
-    tests: 14;
+    tests: number;
   };
 }
 
@@ -252,7 +252,7 @@ const baseSnapshot: Omit<DashboardSnapshot, "environment"> = {
     ],
   },
   localVerification: {
-    tests: 14,
+    tests: 18,
   },
 };
 
