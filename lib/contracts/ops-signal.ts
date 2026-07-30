@@ -466,7 +466,7 @@ export async function signHmacSha256(
   ).join("")}`;
 }
 
-async function verifyHmacSha256(
+export async function verifyHmacSha256(
   value: Uint8Array<ArrayBuffer>,
   signature: unknown,
   secret: string,
@@ -486,7 +486,7 @@ async function verifyHmacSha256(
   );
 }
 
-async function bearerTokenMatches(
+export async function bearerTokenMatches(
   candidate: string,
   configured: string,
 ): Promise<boolean> {
