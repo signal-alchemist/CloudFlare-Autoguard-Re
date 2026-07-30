@@ -84,3 +84,73 @@ export const replayClaims = sqliteTable("replay_claims", {
     .notNull()
     .$defaultFn(() => Math.floor(Date.now() / 1_000)),
 });
+
+export const incidents = sqliteTable(
+  "incidents",
+  {
+    incidentId: text("incident_id").primaryKey(),
+    fingerprint: text("fingerprint").notNull(),
+    siteId: text("site_id").notNull(),
+    environment: text("environment", {
+      enum: ["staging", "production"],
+    }).notNull(),
+    component: text("component").notNull(),
+    reasonCode: text("reason_code").notNull(),
+    scope: text("scope").notNull(),
+    severity: text("severity", {
+      enum: ["sev1", "sev2", "sev3", "sev4"],
+    }).notNull(),
+    state: text("state", {
+      enum: [
+        "open",
+        "acknowledged",
+        "mitigating",
+        "monitoring",
+        "resolved",
+        "manual_required",
+      ],
+    }).notNull(),
+    openedAt: text("opened_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("incidents_fingerprint_unique").on(table.fingerprint),
+    index("incidents_scope_state_idx").on(
+      table.siteId,
+      table.environment,
+      table.state,
+    ),
+  ],
+);
+
+export const incidentTimeline = sqliteTable(
+  "incident_timeline",
+  {
+    eventId: text("event_id").primaryKey(),
+    incidentId: text("incident_id")
+      .notNull()
+      .references(() => incidents.incidentId, {
+        onDelete: "restrict",
+        onUpdate: "restrict",
+      }),
+    eventType: text("event_type", {
+      enum: ["observation_recorded", "state_transition"],
+    }).notNull(),
+    observationId: text("observation_id"),
+    fromState: text("from_state"),
+    toState: text("to_state"),
+    correlationId: text("correlation_id").notNull(),
+    occurredAt: text("occurred_at").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+  },
+  (table) => [
+    uniqueIndex("incident_timeline_idempotency_unique").on(
+      table.incidentId,
+      table.idempotencyKey,
+    ),
+    index("incident_timeline_incident_time_idx").on(
+      table.incidentId,
+      table.occurredAt,
+    ),
+  ],
+);

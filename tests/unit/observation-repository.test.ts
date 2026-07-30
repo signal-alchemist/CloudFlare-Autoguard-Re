@@ -107,17 +107,18 @@ test("D1 migration is repeatable and restart-safe ingest remains idempotent", as
   const migrationFiles = (await readdir(migrationDirectory))
     .filter((file) => file.endsWith(".sql"))
     .sort();
-  assert.equal(migrationFiles.length, 1);
-  const migration = await readFile(
-    new URL(migrationFiles[0] ?? "", migrationDirectory),
-    "utf8",
+  assert.ok(migrationFiles.length >= 1);
+  const migrations = await Promise.all(
+    migrationFiles.map((file) =>
+      readFile(new URL(file, migrationDirectory), "utf8"),
+    ),
   );
 
   const directory = await mkdtemp(join(tmpdir(), "cloudflare-guard-d1-"));
   const databasePath = join(directory, "guard.sqlite");
   let database = new DatabaseSync(databasePath);
-  database.exec(migration);
-  database.exec(migration);
+  for (const migration of migrations) database.exec(migration);
+  for (const migration of migrations) database.exec(migration);
 
   let port = new NodeSqliteD1(database);
   let repository = new D1ObservationRepository(port);
