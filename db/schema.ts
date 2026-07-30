@@ -248,6 +248,44 @@ export const notificationDeliveries = sqliteTable(
   ],
 );
 
+export const deploymentRuntimeIdentities = sqliteTable(
+  "deployment_runtime_identities",
+  {
+    identityId: text("identity_id").primaryKey(),
+    schemaVersion: integer("schema_version").notNull(),
+    siteId: text("site_id").notNull(),
+    environment: text("environment", {
+      enum: ["staging", "production"],
+    }).notNull(),
+    commitSha: text("commit_sha").notNull(),
+    workerVersionId: text("worker_version_id").notNull(),
+    evidenceDigest: text("evidence_digest").notNull(),
+    sourceObservationId: text("source_observation_id")
+      .notNull()
+      .references(() => observations.observationId, {
+        onDelete: "restrict",
+        onUpdate: "restrict",
+      }),
+    policyVersion: text("policy_version").notNull(),
+    observedAt: text("observed_at").notNull(),
+    validUntil: text("valid_until").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("deployment_runtime_identity_scope_time_unique").on(
+      table.siteId,
+      table.environment,
+      table.observedAt,
+    ),
+    index("deployment_runtime_identity_scope_latest_idx").on(
+      table.siteId,
+      table.environment,
+      table.observedAt,
+      table.identityId,
+    ),
+  ],
+);
+
 export const postDeployRequests = sqliteTable(
   "post_deploy_requests",
   {

@@ -25,6 +25,9 @@ import {
   D1OperationalStateRepository,
   type D1OperationalDatabasePort,
 } from "../lib/repositories/operational-state.ts";
+import {
+  D1DeploymentRuntimeIdentityRepository,
+} from "../lib/repositories/deployment-runtime-identities.ts";
 import { D1PostDeployRepository } from "../lib/repositories/post-deploy.ts";
 import type { D1DatabasePort } from "../lib/repositories/observations.ts";
 import {
@@ -278,8 +281,15 @@ const worker = {
       if (
         !env.GUARD_SITE_ID ||
         !env.GUARD_ENVIRONMENT ||
+        !env.DB ||
         !env.CMS_POST_DEPLOY_SERVICE_TOKEN ||
-        !env.CMS_POST_DEPLOY_SIGNING_SECRET
+        env.CMS_POST_DEPLOY_SERVICE_TOKEN.length < 16 ||
+        env.CMS_POST_DEPLOY_SERVICE_TOKEN.length > 4_096 ||
+        /[\r\n]/u.test(env.CMS_POST_DEPLOY_SERVICE_TOKEN) ||
+        !env.CMS_POST_DEPLOY_SIGNING_SECRET ||
+        new TextEncoder().encode(
+          env.CMS_POST_DEPLOY_SIGNING_SECRET,
+        ).byteLength < 32
       ) {
         return unavailableJson();
       }
@@ -297,6 +307,10 @@ const worker = {
         ),
         checker: createPostDeployOperationalChecker({
           repository: operationalState(env),
+          runtimeIdentities:
+            new D1DeploymentRuntimeIdentityRepository(
+              env.DB as unknown as D1DatabasePort,
+            ),
           clock: Date.now,
         }),
         clockSeconds: () => Math.floor(Date.now() / 1_000),

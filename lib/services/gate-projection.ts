@@ -7,12 +7,22 @@ import type {
 import type { PostDeployRequest } from "../contracts/post-deploy.ts";
 import type { ComponentVerdict } from "../domain/component-verdict.ts";
 import {
+  evaluateDeploymentRuntimeIdentity,
+  type DeploymentRuntimeIdentityDecision,
+} from "../domain/deployment-runtime-identity.ts";
+import {
   evaluateOperationGate,
 } from "../domain/gate-policy.ts";
 import type { CompatGateProjectionPort } from "../http/compat-gate.ts";
 import type {
+  DeploymentRuntimeIdentityReader,
+} from "../repositories/deployment-runtime-identities.ts";
+import type {
   PostDeployCheckerPort,
   PostDeployCheckResult,
+} from "./post-deploy.ts";
+import {
+  postDeployInfrastructureReasonCode,
 } from "./post-deploy.ts";
 
 export interface OperationalStateRepository {
@@ -31,6 +41,11 @@ export interface OperationalStateRepository {
 export interface GateProjectionDependencies {
   repository: OperationalStateRepository;
   clock(): number;
+}
+
+export interface PostDeployProjectionDependencies
+  extends GateProjectionDependencies {
+  runtimeIdentities: DeploymentRuntimeIdentityReader;
 }
 
 function failClosedCompat(
@@ -141,22 +156,48 @@ export function createCompatGateProjection(
 
 function unknownResult(
   checkedAt: number,
+  reasonCode = "post_deploy_operational_state_unknown",
 ): PostDeployCheckResult {
   return {
     outcome: "unknown",
-    reasonCode: "post_deploy_operational_state_unknown",
+    reasonCode,
     checkedAt,
   };
 }
 
 export function createPostDeployOperationalChecker(
-  dependencies: GateProjectionDependencies,
+  dependencies: PostDeployProjectionDependencies,
 ): PostDeployCheckerPort {
   return {
     async check(request: PostDeployRequest) {
       const nowMs = dependencies.clock();
       const checkedAt = Math.floor(nowMs / 1_000);
-      if (!Number.isFinite(nowMs)) return unknownResult(checkedAt);
+      if (!Number.isFinite(nowMs)) {
+        return unknownResult(
+          request.requestedAt,
+          postDeployInfrastructureReasonCode,
+        );
+      }
+      let identityDecision: DeploymentRuntimeIdentityDecision;
+      try {
+        const identity = await dependencies.runtimeIdentities.readLatest({
+          siteId: request.siteId,
+          environment: request.environment,
+        });
+        identityDecision = evaluateDeploymentRuntimeIdentity(
+          request,
+          identity,
+          nowMs,
+        );
+      } catch {
+        return unknownResult(
+          checkedAt,
+          postDeployInfrastructureReasonCode,
+        );
+      }
+      if (!identityDecision.matched) {
+        return unknownResult(checkedAt, identityDecision.reasonCode);
+      }
       try {
         const [verdicts, freeze] = await Promise.all([
           dependencies.repository.readVerdicts({
@@ -191,11 +232,21 @@ export function createPostDeployOperationalChecker(
           ) {
             return unknownResult(checkedAt);
           }
+          const boundedFreshUntil = Math.min(
+            freshUntil,
+            identityDecision.freshUntil,
+          );
+          if (boundedFreshUntil <= checkedAt) {
+            return unknownResult(
+              checkedAt,
+              "post_deploy_runtime_identity_stale",
+            );
+          }
           return {
             outcome: "pass",
             reasonCode: "post_deploy_checks_passed",
             checkedAt,
-            freshUntil,
+            freshUntil: boundedFreshUntil,
           };
         }
         const confirmedFailure = evaluation.reasonCodes.includes(
@@ -209,7 +260,10 @@ export function createPostDeployOperationalChecker(
             }
           : unknownResult(checkedAt);
       } catch {
-        return unknownResult(checkedAt);
+        return unknownResult(
+          checkedAt,
+          postDeployInfrastructureReasonCode,
+        );
       }
     },
   };

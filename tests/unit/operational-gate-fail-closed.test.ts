@@ -51,6 +51,23 @@ function verdict(
 const healthyVerdicts = allComponents.map((component) =>
   verdict(component),
 );
+const runtimeIdentities = {
+  async readLatest() {
+    return {
+      schemaVersion: 1 as const,
+      identityId: "runtime_0123456789abcdef0123456789abcdef",
+      siteId: "dfconnect",
+      environment,
+      commitSha: "a".repeat(40),
+      workerVersionId: "worker-1",
+      evidenceDigest: `sha256:${"b".repeat(64)}`,
+      sourceObservationId: "obs_0123456789abcdef0123456789abcdef",
+      policyVersion: "deployment-runtime-identity-v1",
+      observedAt: "2026-07-31T05:59:30.000Z",
+      validUntil: "2026-07-31T06:03:00.000Z",
+    };
+  },
+};
 
 function evaluate(
   operation: Operation,
@@ -230,6 +247,7 @@ test("all operation gates and post-deploy checks deny on missing, stale, non-hea
         return false;
       },
     },
+    runtimeIdentities,
     clock: () => nowMs,
   });
   const unknown = await unknownChecker.check({
@@ -248,6 +266,7 @@ test("all operation gates and post-deploy checks deny on missing, stale, non-hea
 
   const passChecker = createPostDeployOperationalChecker({
     repository: healthyRepository,
+    runtimeIdentities,
     clock: () => nowMs,
   });
   const passed = await passChecker.check({

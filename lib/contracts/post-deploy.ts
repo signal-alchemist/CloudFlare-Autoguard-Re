@@ -144,7 +144,7 @@ export function parsePostDeployRequest(
   }
   if (
     typeof value.workerVersionId !== "string" ||
-    !/^[a-z][a-z0-9-]{2,127}$/u.test(value.workerVersionId)
+    !/^[a-z0-9][a-z0-9.:-]{2,127}$/u.test(value.workerVersionId)
   ) {
     invalid("post_deploy_worker_version_invalid");
   }

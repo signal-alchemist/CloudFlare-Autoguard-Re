@@ -12,6 +12,9 @@ import {
   type PostDeployOutcome,
 } from "../repositories/post-deploy.ts";
 
+export const postDeployInfrastructureReasonCode =
+  "post_deploy_infrastructure_unavailable";
+
 export interface PostDeployCheckResult {
   outcome: PostDeployOutcome;
   reasonCode: string;
@@ -85,7 +88,7 @@ export async function processPostDeployRequest(
       reasonCode:
         claim.state === "claimed"
           ? "post_deploy_check_in_progress"
-          : `post_deploy_checks_${claim.state}`,
+          : claim.reasonCode ?? `post_deploy_checks_${claim.state}`,
       receipt: null,
     };
   }
@@ -97,7 +100,7 @@ export async function processPostDeployRequest(
   } catch {
     check = {
       outcome: "unknown",
-      reasonCode: "post_deploy_checker_unavailable",
+      reasonCode: postDeployInfrastructureReasonCode,
       checkedAt: verified.verifiedAtSeconds,
     };
   }

@@ -30,7 +30,7 @@ test("private Sites release package has an opaque project binding and complete r
     .sort();
   assert.deepEqual(
     migrations.map((name) => name.slice(0, 4)),
-    ["0000", "0001", "0002", "0003", "0004"],
+    ["0000", "0001", "0002", "0003", "0004", "0005"],
   );
 
   const worker = await readFile(new URL("worker/index.ts", root), "utf8");

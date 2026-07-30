@@ -175,6 +175,26 @@ Gateをdenyする。productionの初期reviewed policyはpublic delivery manifes
 9 checkを`public_probe + external_probe`の2地点必須にする。CMS ops signalは
 failure-onlyなのでhealthyを証明するrequired sourceには使用しない。
 
+### 7.1 Post-deploy runtime identity
+
+CMS runtime identityは独立probeが確認した
+`commitSha / workerVersionId / evidenceDigest`だけを
+`deployment_runtime_identities`へappendする。request値やSites環境変数から
+server-owned identityを生成しない。scopeの最新recordだけを読み、missing、
+stale、または3値の1つでも不一致なら`unknown`とし、古い一致recordへ
+fallbackしない。
+
+identityは固定policy `deployment-runtime-identity-v1`、最大300秒、
+future skew 30秒に限定し、source Observationとの外部キーで独立証跡へ結ぶ。
+3値が完全一致した後だけlive `siteDeploy` Gateを評価し、identityとGateの
+短い方のfreshnessをallow receiptへ使う。
+
+identity/Gate D1障害と内部障害はserver詳細を捨ててgeneric `503`、
+missing/stale/mismatchは`post-deploy-evaluation-v1`の`unknown`を`503`で返す。
+auth/signatureは`401`、scopeは`403`、request ID conflictは`409`、malformed
+requestは`400`とする。duplicate/restartでは保存済みreasonを返し、checkerを
+再実行しない。
+
 ## 8. API
 
 | Method/path | 用途 |
@@ -206,8 +226,9 @@ noindexを返す。Access失敗responseにも同じ安全headerを付ける。
 
 ## 9. Persistence
 
-- D1: sites、checks、observations、receipts、component verdicts、incidents、timeline、
-  freezes、jobs、outbox/inbox、audit
+- D1: sites、checks、observations、receipts、component verdicts、
+  deployment runtime identities、post-deploy requests/receipts、incidents、
+  timeline、freezes、jobs、outbox/inbox、audit
 - private R2: failure screenshot等のlarge sanitized evidence
 - Queue/DLQ: check jobとalert deliveryを分離
 
@@ -244,6 +265,10 @@ navigationを出し、`REMOTE NOT RUN`やfreshnessを小画面でも非表示に
   evidenceに数えない。
 - Guard WorkerはCloudflare read-only inventory tokenだけを持つ。
 - CMS deploy/recovery tokenをGuardへ渡さない。
+- Sites saved versionのcommit/version/archive digestはGuard自身のidentityであり、
+  CMS runtime identityへ流用しない。CMS deployごとの動的identityをSites
+  environmentへ書くとGuard再deployとの循環になるため、stableなprobe設定だけを
+  Sitesへ置き、観測identityはD1で更新する。
 - stagingでfailure matrixとnotification rehearsal後にproduction shadowへ進む。
 - production gateは14日以上のshadow evidenceとowner承認後に有効化する。
 
@@ -256,3 +281,7 @@ canonical APIと混在させない。consumer-driven testをrelease blockerと�
 
 CMS ops envelope v1にはsiteId/audience/nonce/expiryがない。MVPはcredential
 bindingとfreshness/dedupeでfail-closed補完し、v2 migrationを別Issueで行う。
+
+現CMS post-deploy scriptの`site-<SHA先頭12文字>`は実Worker versionではない。
+Cloudflareが返す実version IDを取得してrequestへ渡すまでは、server-owned
+identityと一致せず`unknown`になる。

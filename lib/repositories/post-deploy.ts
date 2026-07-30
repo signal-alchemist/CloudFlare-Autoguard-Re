@@ -20,6 +20,7 @@ export type PostDeployRequestState = "claimed" | PostDeployOutcome;
 export interface PostDeployClaim {
   status: "created" | "existing";
   state: PostDeployRequestState;
+  reasonCode: string | null;
   receipt: SignedPostDeployVerdict | null;
 }
 
@@ -41,6 +42,7 @@ interface PostDeployRequestRow {
   evidence_digest: string;
   requested_at: number;
   status: PostDeployRequestState;
+  reason_code: unknown;
 }
 
 interface PostDeployReceiptRow {
@@ -132,7 +134,8 @@ export class D1PostDeployRepository {
       .prepare(
         `
           SELECT request_id, request_digest, site_id, environment, commit_sha,
-            worker_version_id, evidence_digest, requested_at, status
+            worker_version_id, evidence_digest, requested_at, status,
+            reason_code
           FROM post_deploy_requests
           WHERE request_id = ?1
           LIMIT 1
@@ -147,9 +150,19 @@ export class D1PostDeployRepository {
     ) {
       invalid("post_deploy_idempotency_conflict");
     }
+    const reasonCode = row.reason_code;
+    if (
+      (row.status === "claimed" && reasonCode !== null) ||
+      (row.status !== "claimed" &&
+        (typeof reasonCode !== "string" ||
+          !/^[A-Za-z0-9_.:-]{1,128}$/u.test(reasonCode)))
+    ) {
+      throw new Error("post_deploy_claim_corrupt");
+    }
     return {
       status: changes(result) === 1 ? "created" : "existing",
       state: row.status,
+      reasonCode: reasonCode as string | null,
       receipt: await this.receipt(request.requestId),
     };
   }
