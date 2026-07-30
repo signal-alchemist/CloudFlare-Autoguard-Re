@@ -2,6 +2,9 @@
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
 import { handleCompatGateRequest } from "../lib/http/compat-gate.ts";
+import { handlePostDeployRequest } from "../lib/http/post-deploy.ts";
+import { D1PostDeployRepository } from "../lib/repositories/post-deploy.ts";
+import type { D1DatabasePort } from "../lib/repositories/observations.ts";
 
 interface Env {
   ASSETS: Fetcher;
@@ -10,6 +13,8 @@ interface Env {
   GUARD_ENVIRONMENT?: "staging" | "production";
   CMS_GATE_SERVICE_TOKEN?: string;
   CMS_GATE_SIGNING_SECRET?: string;
+  CMS_POST_DEPLOY_SERVICE_TOKEN?: string;
+  CMS_POST_DEPLOY_SIGNING_SECRET?: string;
   IMAGES: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {
@@ -74,6 +79,46 @@ const worker = {
           },
         },
       );
+    }
+
+    if (url.pathname === "/v1/post-deploy-checks") {
+      if (
+        !env.GUARD_SITE_ID ||
+        !env.GUARD_ENVIRONMENT ||
+        !env.CMS_POST_DEPLOY_SERVICE_TOKEN ||
+        !env.CMS_POST_DEPLOY_SIGNING_SECRET
+      ) {
+        return Response.json(
+          { error: "service_unavailable" },
+          {
+            status: 503,
+            headers: { "cache-control": "no-store" },
+          },
+        );
+      }
+      return handlePostDeployRequest(request, {
+        credential: {
+          siteId: env.GUARD_SITE_ID,
+          environment: env.GUARD_ENVIRONMENT,
+          serviceToken: env.CMS_POST_DEPLOY_SERVICE_TOKEN,
+          signingSecret: env.CMS_POST_DEPLOY_SIGNING_SECRET,
+          maxAgeSeconds: 300,
+          maxFutureSkewSeconds: 30,
+        },
+        repository: new D1PostDeployRepository(
+          env.DB as unknown as D1DatabasePort,
+        ),
+        checker: {
+          async check() {
+            return {
+              outcome: "unknown",
+              reasonCode: "post_deploy_checker_unconfigured",
+              checkedAt: Math.floor(Date.now() / 1_000),
+            };
+          },
+        },
+        clockSeconds: () => Math.floor(Date.now() / 1_000),
+      });
     }
 
     if (url.pathname === "/_vinext/image") {

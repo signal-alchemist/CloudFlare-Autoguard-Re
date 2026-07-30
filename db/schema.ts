@@ -177,3 +177,48 @@ export const notificationDeliveries = sqliteTable(
     ),
   ],
 );
+
+export const postDeployRequests = sqliteTable(
+  "post_deploy_requests",
+  {
+    requestId: text("request_id").primaryKey(),
+    requestDigest: text("request_digest").notNull(),
+    siteId: text("site_id").notNull(),
+    environment: text("environment", {
+      enum: ["staging", "production"],
+    }).notNull(),
+    commitSha: text("commit_sha").notNull(),
+    workerVersionId: text("worker_version_id").notNull(),
+    evidenceDigest: text("evidence_digest").notNull(),
+    requestedAt: integer("requested_at").notNull(),
+    status: text("status", {
+      enum: ["claimed", "pass", "fail", "unknown"],
+    }).notNull(),
+    reasonCode: text("reason_code"),
+    checkedAt: integer("checked_at"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("post_deploy_requests_digest_unique").on(
+      table.requestDigest,
+    ),
+    index("post_deploy_requests_scope_time_idx").on(
+      table.siteId,
+      table.environment,
+      table.requestedAt,
+    ),
+  ],
+);
+
+export const postDeployReceipts = sqliteTable("post_deploy_receipts", {
+  requestId: text("request_id")
+    .primaryKey()
+    .references(() => postDeployRequests.requestId, {
+      onDelete: "restrict",
+      onUpdate: "restrict",
+    }),
+  responseJson: text("response_json").notNull(),
+  responseDigest: text("response_digest").notNull(),
+  recordedAt: integer("recorded_at").notNull(),
+});
