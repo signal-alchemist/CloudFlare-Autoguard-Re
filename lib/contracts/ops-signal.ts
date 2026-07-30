@@ -19,6 +19,14 @@ export type ObservationStatus =
   | "unknown"
   | "unsupported";
 
+export type ObservationSource =
+  | "cms_ops_signal"
+  | "public_probe"
+  | "external_probe"
+  | "provider_api"
+  | "autoguard_self"
+  | "post_deploy";
+
 interface RuntimeFailureSignal {
   schema: "ops-signal-v1";
   event: "worker.runtime_failure";
@@ -66,7 +74,7 @@ export interface Observation {
   reasonCode: string;
   observedAt: string;
   validUntil: string;
-  source: "cms_ops_signal" | "public_probe";
+  source: ObservationSource;
   scope: string;
   evidenceId: string;
   correlationId: string;
