@@ -5,6 +5,11 @@ import { handleCompatGateRequest } from "../lib/http/compat-gate.ts";
 import { handlePostDeployRequest } from "../lib/http/post-deploy.ts";
 import { D1PostDeployRepository } from "../lib/repositories/post-deploy.ts";
 import type { D1DatabasePort } from "../lib/repositories/observations.ts";
+import {
+  createCompatGateProjection,
+  createPostDeployOperationalChecker,
+  type OperationalStateRepository,
+} from "../lib/services/gate-projection.ts";
 
 interface Env {
   ASSETS: Fetcher;
@@ -28,6 +33,15 @@ interface ExecutionContext {
   waitUntil(promise: Promise<unknown>): void;
   passThroughOnException(): void;
 }
+
+const failClosedOperationalState: OperationalStateRepository = {
+  async readVerdicts() {
+    return [];
+  },
+  async hasActiveFreeze() {
+    return false;
+  },
+};
 
 // Image security config. SVG sources with .svg extension auto-skip the
 // optimization endpoint on the client side (served directly, no proxy).
@@ -63,21 +77,10 @@ const worker = {
           signingSecret: env.CMS_GATE_SIGNING_SECRET,
           clock: Date.now,
         },
-        {
-          async read({ siteId, environment, nowSeconds }) {
-            return {
-              siteId,
-              environment,
-              gates: {
-                contentPublish: "deny",
-                siteDeploy: "deny",
-              },
-              checkedAt: nowSeconds,
-              freshUntil: nowSeconds + 30,
-              freeze: false,
-            };
-          },
-        },
+        createCompatGateProjection({
+          repository: failClosedOperationalState,
+          clock: Date.now,
+        }),
       );
     }
 
@@ -108,15 +111,10 @@ const worker = {
         repository: new D1PostDeployRepository(
           env.DB as unknown as D1DatabasePort,
         ),
-        checker: {
-          async check() {
-            return {
-              outcome: "unknown",
-              reasonCode: "post_deploy_checker_unconfigured",
-              checkedAt: Math.floor(Date.now() / 1_000),
-            };
-          },
-        },
+        checker: createPostDeployOperationalChecker({
+          repository: failClosedOperationalState,
+          clock: Date.now,
+        }),
         clockSeconds: () => Math.floor(Date.now() / 1_000),
       });
     }
