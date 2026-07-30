@@ -175,7 +175,51 @@ Gateをdenyする。productionの初期reviewed policyはpublic delivery manifes
 9 checkを`public_probe + external_probe`の2地点必須にする。CMS ops signalは
 failure-onlyなのでhealthyを証明するrequired sourceには使用しない。
 
-### 7.1 Post-deploy runtime identity
+### 7.1 Scheduled public-delivery producer
+
+default Guard WorkerはUTC 1分間隔のCronから`scheduled()`を実行する。target、
+site、environment、check IDはrequestや環境変数から構築せず、
+`config/sites/dfconnect.production.ts`をstrict compileした9 checkだけを
+最大4並列で実行する。
+
+```text
+Cron scheduledTime
+  -> exact site/environment/cron validation
+  -> checked-in manifest compile
+  -> DNS A/AAAA observation + manual-redirect HTTP fetch
+  -> per-check sanitized Observation
+  -> D1 receipt/audit
+  -> all 9 persisted
+  -> autoguard_self scheduler heartbeat PASS
+```
+
+scheduled Observationのlogical keyは
+`site/environment/scheduledTime/checkId`で固定する。retry時は既存keyを先に
+読み、同じtickで結果を増殖させない。raceした異なる結果は上書きせず
+idempotency conflictへ倒す。target保存の一部でも失敗した場合、可能なら
+`scheduled_cycle_incomplete`のUNKNOWN heartbeatを残し、PASS heartbeatは
+作らない。
+
+Workers adapterは2つのtransport能力を混同しない。
+
+| 能力 | Worker scheduled source |
+|---|---|
+| A/AAAA、TTL | `node:dns`の`resolve4` / `resolve6`で観測可能 |
+| HTTP status/header/body/redirect/latency | `fetch`、manual redirect、bounded body |
+| 実接続IP | Workers `fetch`では取得不能 |
+| TLS certificate/protocol/expiry/SNI | Workers `fetch`では取得不能 |
+
+HTTP/securityの明確な不一致は不足証明があってもFAILを優先する。timeout、
+network error、403、429、5xx、body decode不能はUNKNOWNとする。HTTPが全て
+一致しても実接続IP/TLSが取得不能なWorker sourceはUNKNOWNであり、偽の値を
+入れてPASSにしない。外部のfully-attested probeは別sourceとして維持する。
+
+scheduler heartbeatのPASSはscheduler起動、全check試行、D1保存完了だけを
+表し、siteやGuard全体のhealthyを意味しない。audit actorはCMS ingressと分け、
+`scheduled-public-producer` /
+`dfconnect-public-delivery-v1`で記録する。
+
+### 7.2 Post-deploy runtime identity
 
 CMS runtime identityは独立probeが確認した
 `commitSha / workerVersionId / evidenceDigest`だけを
@@ -271,6 +315,9 @@ navigationを出し、`REMOTE NOT RUN`やfreshnessを小画面でも非表示に
   Sitesへ置き、観測identityはD1で更新する。
 - stagingでfailure matrixとnotification rehearsal後にproduction shadowへ進む。
 - production gateは14日以上のshadow evidenceとowner承認後に有効化する。
+- checked-in Worker configは`* * * * *` Cron、`nodejs_compat`、environment別
+  D1 bindingを持つ。build artifactのtriggerをrelease contractで検査し、
+  remoteで実発火とheartbeat freshnessを確認するまでCronをPASS扱いしない。
 
 ## 12. 既存CMSとの不整合と方針
 

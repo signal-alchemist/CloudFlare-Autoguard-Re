@@ -22,6 +22,15 @@ test("private Sites release package has an opaque project binding and complete r
   );
 
   await access(new URL("dist/server/index.js", root));
+  const wrangler = JSON.parse(
+    await readFile(
+      new URL("dist/server/wrangler.json", root),
+      "utf8",
+    ),
+  );
+  assert.deepEqual(wrangler.triggers?.crons, ["* * * * *"]);
+  assert.ok(wrangler.compatibility_flags?.includes("nodejs_compat"));
+  assert.equal(wrangler.d1_databases?.[0]?.binding, "DB");
   await access(new URL("worker/index.ts", root));
   await access(new URL("public/og.png", root));
 
@@ -38,4 +47,6 @@ test("private Sites release package has an opaque project binding and complete r
   assert.match(worker, /cloudflare-access/u);
   assert.match(worker, /sites-private/u);
   assert.match(worker, /service_unavailable/u);
+  assert.match(worker, /async scheduled/u);
+  assert.match(worker, /runDfconnectScheduledPublicDelivery/u);
 });

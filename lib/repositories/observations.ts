@@ -31,6 +31,16 @@ export interface RecordObservationReceipt {
   observation: Observation;
 }
 
+export interface ObservationAuditContext {
+  actorId: string;
+  policyVersion: string;
+}
+
+export const cmsSignalObservationAuditContext = {
+  actorId: "cms-signal-ingest",
+  policyVersion: "ops-signal-v1",
+} satisfies ObservationAuditContext;
+
 interface ObservationRow {
   observation_id: string;
   schema_version: number;
@@ -75,11 +85,11 @@ const insertAudit = `
     audit_id, actor_type, actor_id, action, target_type, target_id, decision,
     policy_version, correlation_id, occurred_at, result
   )
-  SELECT ?1, 'service', 'cms-signal-ingest', 'observation.accepted',
-    'observation', ?2, 'allow', 'ops-signal-v1', ?3, ?4, 'accepted'
+  SELECT ?1, 'service', ?2, 'observation.accepted',
+    'observation', ?3, 'allow', ?4, ?5, ?6, 'accepted'
   WHERE EXISTS (
     SELECT 1 FROM signal_receipts
-    WHERE observation_id = ?2
+    WHERE observation_id = ?3
   )
 `;
 
@@ -126,9 +136,21 @@ function changes(result: D1RunResult | undefined): number {
 
 export class D1ObservationRepository {
   readonly database: D1DatabasePort;
+  readonly auditContext: ObservationAuditContext;
 
-  constructor(database: D1DatabasePort) {
+  constructor(
+    database: D1DatabasePort,
+    auditContext: ObservationAuditContext =
+      cmsSignalObservationAuditContext,
+  ) {
+    if (
+      !/^[a-z][a-z0-9-]{2,127}$/u.test(auditContext.actorId) ||
+      !/^[A-Za-z0-9_.:-]{1,128}$/u.test(auditContext.policyVersion)
+    ) {
+      throw new ContractError("observation_audit_context_invalid");
+    }
     this.database = database;
+    this.auditContext = { ...auditContext };
   }
 
   async record(
@@ -172,7 +194,9 @@ export class D1ObservationRepository {
         .prepare(insertAudit)
         .bind(
           auditId,
+          this.auditContext.actorId,
           observation.observationId,
+          this.auditContext.policyVersion,
           observation.correlationId,
           normalizedReceivedAt,
         ),

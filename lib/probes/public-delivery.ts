@@ -66,12 +66,66 @@ export interface PublicDeliveryExchange {
   tls: PublicDeliveryTlsEvidence;
 }
 
-export interface PublicDeliveryProbePorts {
+export interface FullyAttestedPublicDeliveryProbePorts {
+  mode?: "fully-attested";
   resolve(hostname: string): Promise<PublicDeliveryDnsResult>;
   exchange(
     request: PublicDeliveryExchangeRequest,
   ): Promise<PublicDeliveryExchange>;
 }
+
+export type PublicDeliveryCapability<T> =
+  | {
+      kind: "observed";
+      value: T;
+    }
+  | {
+      kind: "unavailable";
+      reasonCode:
+        | "dns_resolution_failed"
+        | "dns_response_invalid"
+        | "worker_dns_evidence_unavailable";
+    };
+
+export interface PublicDeliveryWorkerExchangeRequest {
+  url: string;
+  method: PublicDeliveryMethod;
+  maxResponseBytes: number;
+  timeoutMs: number;
+  requiredHeaders: readonly string[];
+}
+
+export interface PublicDeliveryWorkerExchange {
+  status: number;
+  headers: Readonly<Record<string, string>>;
+  body: Uint8Array;
+  bodyTooLarge: boolean;
+  elapsedMs: number;
+}
+
+export type PublicDeliveryWorkerExchangeResult =
+  | {
+      kind: "response";
+      value: PublicDeliveryWorkerExchange;
+    }
+  | {
+      kind: "unavailable";
+      reasonCode: "probe_timeout" | "probe_transport_error";
+    };
+
+export interface CloudflareWorkerPublicDeliveryProbePorts {
+  mode: "cloudflare-worker";
+  resolve(
+    hostname: string,
+  ): Promise<PublicDeliveryCapability<PublicDeliveryDnsResult>>;
+  exchange(
+    request: PublicDeliveryWorkerExchangeRequest,
+  ): Promise<PublicDeliveryWorkerExchangeResult>;
+}
+
+export type PublicDeliveryProbePorts =
+  | FullyAttestedPublicDeliveryProbePorts
+  | CloudflareWorkerPublicDeliveryProbePorts;
 
 export interface PublicDeliverySelection {
   siteId: string;
@@ -80,7 +134,7 @@ export interface PublicDeliverySelection {
 }
 
 export interface PublicDeliveryEvidence {
-  schema: "public-delivery-evidence-v1";
+  schema: "public-delivery-evidence-v2";
   evidenceId: string;
   siteId: string;
   environment: Environment;
@@ -91,16 +145,24 @@ export interface PublicDeliveryEvidence {
     path: string;
   };
   dns: {
+    availability: "observed" | "unavailable";
+    reasonCode: string | null;
     answerCount: number;
     minimumTtlSeconds: number | null;
-    allGlobal: boolean;
-    connectionAttested: boolean;
+    allGlobal: boolean | null;
+  };
+  connection: {
+    availability: "observed" | "unavailable";
+    reasonCode: string | null;
+    attested: boolean;
   };
   tls: {
-    authorized: boolean;
+    availability: "observed" | "unavailable";
+    reasonCode: string | null;
+    authorized: boolean | null;
     protocol: string | null;
     daysRemaining: number | null;
-    sniMatched: boolean;
+    sniMatched: boolean | null;
   };
   http: {
     status: number | null;
@@ -133,14 +195,20 @@ export interface PublicDeliveryProbeResult {
 }
 
 interface EvidenceState {
+  dnsAvailability: "observed" | "unavailable";
+  dnsReasonCode: string | null;
   answerCount: number;
   minimumTtlSeconds: number | null;
-  allGlobal: boolean;
+  allGlobal: boolean | null;
+  connectionAvailability: "observed" | "unavailable";
+  connectionReasonCode: string | null;
   connectionAttested: boolean;
-  tlsAuthorized: boolean;
+  tlsAvailability: "observed" | "unavailable";
+  tlsReasonCode: string | null;
+  tlsAuthorized: boolean | null;
   tlsProtocol: string | null;
   tlsDaysRemaining: number | null;
-  tlsSniMatched: boolean;
+  tlsSniMatched: boolean | null;
   httpStatus: number | null;
   redirectCount: number;
   elapsedMs: number | null;
@@ -589,14 +657,20 @@ export function compilePublicDeliveryManifest(
 
 function initialEvidence(): EvidenceState {
   return {
+    dnsAvailability: "unavailable",
+    dnsReasonCode: "not_observed",
     answerCount: 0,
     minimumTtlSeconds: null,
-    allGlobal: false,
+    allGlobal: null,
+    connectionAvailability: "unavailable",
+    connectionReasonCode: "not_observed",
     connectionAttested: false,
-    tlsAuthorized: false,
+    tlsAvailability: "unavailable",
+    tlsReasonCode: "not_observed",
+    tlsAuthorized: null,
     tlsProtocol: null,
     tlsDaysRemaining: null,
-    tlsSniMatched: false,
+    tlsSniMatched: null,
     httpStatus: null,
     redirectCount: 0,
     elapsedMs: null,
@@ -671,7 +745,7 @@ async function finish(
   const identityDigest = await sha256(identity);
   const evidenceId = `ev_${(await sha256(`evidence:${identity}`)).slice(0, 32)}`;
   const evidence: PublicDeliveryEvidence = {
-    schema: "public-delivery-evidence-v1",
+    schema: "public-delivery-evidence-v2",
     evidenceId,
     siteId: input.selection.siteId,
     environment: input.selection.environment,
@@ -682,12 +756,20 @@ async function finish(
       path: target.pathname,
     },
     dns: {
+      availability: evidenceState.dnsAvailability,
+      reasonCode: evidenceState.dnsReasonCode,
       answerCount: evidenceState.answerCount,
       minimumTtlSeconds: evidenceState.minimumTtlSeconds,
       allGlobal: evidenceState.allGlobal,
-      connectionAttested: evidenceState.connectionAttested,
+    },
+    connection: {
+      availability: evidenceState.connectionAvailability,
+      reasonCode: evidenceState.connectionReasonCode,
+      attested: evidenceState.connectionAttested,
     },
     tls: {
+      availability: evidenceState.tlsAvailability,
+      reasonCode: evidenceState.tlsReasonCode,
       authorized: evidenceState.tlsAuthorized,
       protocol: evidenceState.tlsProtocol,
       daysRemaining: evidenceState.tlsDaysRemaining,
@@ -757,6 +839,348 @@ function indeterminateHttpStatus(status: number): boolean {
   return status === 403 || status === 429 || status >= 500;
 }
 
+function workerTimeoutMs(check: PublicDeliveryCheck): number {
+  return Math.min(
+    30_000,
+    Math.max(1_000, check.maxElapsedMs * 2),
+  );
+}
+
+async function runCloudflareWorkerCheck(
+  input: RunPublicDeliveryCheckInput,
+  ports: CloudflareWorkerPublicDeliveryProbePorts,
+  check: PublicDeliveryCheck,
+  target: URL,
+): Promise<PublicDeliveryProbeResult> {
+  const state = initialEvidence();
+  state.connectionReasonCode = "worker_connected_ip_unavailable";
+  state.tlsReasonCode = "worker_tls_evidence_unavailable";
+  let current = target;
+
+  for (let hop = 0; hop <= check.maxRedirects + 1; hop += 1) {
+    let dns: PublicDeliveryCapability<PublicDeliveryDnsResult>;
+    try {
+      dns = await ports.resolve(current.hostname);
+    } catch {
+      dns = {
+        kind: "unavailable",
+        reasonCode: "dns_resolution_failed",
+      };
+    }
+    if (dns.kind === "observed") {
+      if (
+        dns.value.addresses.length < 1 ||
+        dns.value.addresses.length > 32 ||
+        !Number.isInteger(dns.value.ttlSeconds) ||
+        dns.value.ttlSeconds < 1
+      ) {
+        state.dnsAvailability = "unavailable";
+        state.dnsReasonCode = "dns_response_invalid";
+        state.allGlobal = null;
+      } else {
+        state.answerCount += dns.value.addresses.length;
+        state.minimumTtlSeconds =
+          state.minimumTtlSeconds === null
+            ? dns.value.ttlSeconds
+            : Math.min(
+                state.minimumTtlSeconds,
+                dns.value.ttlSeconds,
+              );
+        if (
+          dns.value.addresses.some(
+            (address) => !isGlobalAddress(address),
+          )
+        ) {
+          return finish(
+            input,
+            check,
+            target,
+            state,
+            "fail",
+            "dns_non_global_address",
+          );
+        }
+        state.dnsAvailability = "observed";
+        state.dnsReasonCode = null;
+        state.allGlobal = true;
+      }
+    } else {
+      state.dnsAvailability = "unavailable";
+      state.dnsReasonCode = dns.reasonCode;
+      state.allGlobal = null;
+    }
+
+    if (check.kind === "dns") {
+      return state.dnsAvailability === "observed"
+        ? finish(
+            input,
+            check,
+            target,
+            state,
+            "pass",
+            "dns_resolution_healthy",
+          )
+        : finish(
+            input,
+            check,
+            target,
+            state,
+            "unknown",
+            state.dnsReasonCode ?? "worker_dns_evidence_unavailable",
+          );
+    }
+
+    let result: PublicDeliveryWorkerExchangeResult;
+    try {
+      result = await ports.exchange({
+        url: current.href,
+        method: check.method,
+        maxResponseBytes: check.maxResponseBytes,
+        timeoutMs: workerTimeoutMs(check),
+        requiredHeaders: check.expect.requiredHeaders,
+      });
+    } catch {
+      result = {
+        kind: "unavailable",
+        reasonCode: "probe_transport_error",
+      };
+    }
+    if (result.kind === "unavailable") {
+      return finish(
+        input,
+        check,
+        target,
+        state,
+        "unknown",
+        result.reasonCode,
+      );
+    }
+
+    const exchange = result.value;
+    state.httpStatus = exchange.status;
+    state.elapsedMs =
+      state.elapsedMs === null
+        ? exchange.elapsedMs
+        : state.elapsedMs + exchange.elapsedMs;
+    if (
+      !Number.isInteger(exchange.status) ||
+      exchange.status < 100 ||
+      exchange.status > 599 ||
+      !Number.isFinite(exchange.elapsedMs) ||
+      exchange.elapsedMs < 0
+    ) {
+      return finish(
+        input,
+        check,
+        target,
+        state,
+        "unknown",
+        "http_response_invalid",
+      );
+    }
+
+    const headers = lowerHeaders(exchange.headers);
+    if (redirectStatuses.has(exchange.status)) {
+      const location = headers.location;
+      if (!location) {
+        return finish(
+          input,
+          check,
+          target,
+          state,
+          "fail",
+          "http_redirect_location_missing",
+        );
+      }
+      let next: URL;
+      try {
+        next = new URL(location, current);
+      } catch {
+        return finish(
+          input,
+          check,
+          target,
+          state,
+          "fail",
+          "http_redirect_location_invalid",
+        );
+      }
+      try {
+        reviewedUrl(
+          next.href,
+          input.manifest.allowedOrigins,
+          "http_off_origin_redirect",
+        );
+      } catch (error) {
+        if (
+          error instanceof ContractError &&
+          error.code === "http_off_origin_redirect"
+        ) {
+          return finish(
+            input,
+            check,
+            target,
+            state,
+            "fail",
+            "http_off_origin_redirect",
+          );
+        }
+        throw error;
+      }
+      if (state.redirectCount >= check.maxRedirects) {
+        return finish(
+          input,
+          check,
+          target,
+          state,
+          "fail",
+          "http_redirect_limit",
+        );
+      }
+      state.redirectCount += 1;
+      current = next;
+      continue;
+    }
+
+    if (
+      check.kind === "tls" ||
+      indeterminateHttpStatus(exchange.status)
+    ) {
+      return finish(
+        input,
+        check,
+        target,
+        state,
+        "unknown",
+        indeterminateHttpStatus(exchange.status)
+          ? "http_response_indeterminate"
+          : "worker_tls_evidence_unavailable",
+      );
+    }
+
+    const expectedStatus = check.expect.status!;
+    state.assertionStatus = exchange.status === expectedStatus;
+    if (!state.assertionStatus) {
+      return finish(
+        input,
+        check,
+        target,
+        state,
+        indeterminateHttpStatus(exchange.status) ? "unknown" : "fail",
+        indeterminateHttpStatus(exchange.status)
+          ? "http_response_indeterminate"
+          : "http_status_unexpected",
+      );
+    }
+    const contentType = headers["content-type"]?.toLowerCase() ?? "";
+    state.assertionContentType = contentType.startsWith(
+      check.expect.contentTypePrefix!,
+    );
+    if (!state.assertionContentType) {
+      return finish(
+        input,
+        check,
+        target,
+        state,
+        "fail",
+        "http_content_type_unexpected",
+      );
+    }
+    state.assertionRequiredHeaders = check.expect.requiredHeaders.every(
+      (header) => headers[header] !== undefined,
+    );
+    if (!state.assertionRequiredHeaders) {
+      return finish(
+        input,
+        check,
+        target,
+        state,
+        "fail",
+        "http_required_header_missing",
+      );
+    }
+    if (
+      exchange.bodyTooLarge ||
+      exchange.body.byteLength > check.maxResponseBytes
+    ) {
+      return finish(
+        input,
+        check,
+        target,
+        state,
+        "unknown",
+        "http_body_too_large",
+      );
+    }
+    state.bodySha256 = await sha256(exchange.body);
+    let body = "";
+    if (
+      check.expect.bodyMarker !== undefined ||
+      check.expect.canonical !== undefined
+    ) {
+      try {
+        body = new TextDecoder("utf-8", { fatal: true }).decode(
+          exchange.body,
+        );
+      } catch {
+        return finish(
+          input,
+          check,
+          target,
+          state,
+          "unknown",
+          "http_body_decode_invalid",
+        );
+      }
+    }
+    state.assertionBodyMarker =
+      check.expect.bodyMarker === undefined
+        ? null
+        : body.includes(check.expect.bodyMarker);
+    if (state.assertionBodyMarker === false) {
+      return finish(
+        input,
+        check,
+        target,
+        state,
+        "fail",
+        "http_marker_missing",
+      );
+    }
+    state.assertionCanonical =
+      check.expect.canonical === undefined
+        ? null
+        : canonicalFromHtml(body) === check.expect.canonical;
+    if (state.assertionCanonical === false) {
+      return finish(
+        input,
+        check,
+        target,
+        state,
+        "fail",
+        "http_canonical_mismatch",
+      );
+    }
+
+    return finish(
+      input,
+      check,
+      target,
+      state,
+      "unknown",
+      "worker_transport_attestation_unavailable",
+    );
+  }
+  return finish(
+    input,
+    check,
+    target,
+    state,
+    "fail",
+    "http_redirect_limit",
+  );
+}
+
 export async function runPublicDeliveryCheck(
   input: RunPublicDeliveryCheckInput,
 ): Promise<PublicDeliveryProbeResult> {
@@ -766,13 +1190,22 @@ export async function runPublicDeliveryCheck(
   safeCorrelationId(input.correlationId);
   const check = selectionCheck(input.manifest, input.selection);
   const target = reviewedUrl(check.url, input.manifest.allowedOrigins);
+  const ports = input.ports;
+  if (ports.mode === "cloudflare-worker") {
+    return runCloudflareWorkerCheck(
+      input,
+      ports,
+      check,
+      target,
+    );
+  }
   const state = initialEvidence();
   let current = target;
 
   for (let hop = 0; hop <= check.maxRedirects + 1; hop += 1) {
     let dns: PublicDeliveryDnsResult;
     try {
-      dns = await input.ports.resolve(current.hostname);
+      dns = await ports.resolve(current.hostname);
     } catch {
       return finish(
         input,
@@ -813,6 +1246,8 @@ export async function runPublicDeliveryCheck(
         "dns_non_global_address",
       );
     }
+    state.dnsAvailability = "observed";
+    state.dnsReasonCode = null;
     state.allGlobal = true;
     if (check.kind === "dns") {
       return finish(
@@ -827,7 +1262,7 @@ export async function runPublicDeliveryCheck(
 
     let exchange: PublicDeliveryExchange;
     try {
-      exchange = await input.ports.exchange({
+      exchange = await ports.exchange({
         url: current.href,
         method: check.method,
         allowedAddresses: dns.addresses,
@@ -857,6 +1292,8 @@ export async function runPublicDeliveryCheck(
         "http_connection_ip_mismatch",
       );
     }
+    state.connectionAvailability = "observed";
+    state.connectionReasonCode = null;
     state.connectionAttested = true;
     state.httpStatus = exchange.status;
     state.elapsedMs =
@@ -868,6 +1305,8 @@ export async function runPublicDeliveryCheck(
     state.tlsDaysRemaining = exchange.tls.daysRemaining;
     state.tlsSniMatched =
       exchange.tls.sniHostname.toLowerCase() === current.hostname;
+    state.tlsAvailability = "observed";
+    state.tlsReasonCode = null;
     if (
       !exchange.tls.authorized ||
       !protocolSafe(exchange.tls.protocol) ||

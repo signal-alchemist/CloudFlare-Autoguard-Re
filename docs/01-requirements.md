@@ -72,6 +72,14 @@ missing/stale/invalid、またはactive freezeがある場合はdenyとする。
   latencyを検査する。
 - DNSとTLSを独立Observationにする。
 - productionは2地点以上、うち1地点以上をCloudflare外に置く。
+- Guard Workerは1分ごとのscheduled handlerからchecked-in production
+  manifestだけを最大4並列で観測し、同じscheduled timeを冪等保存する。
+- Workers `fetch`が直接返さない接続先IP、TLS証明書、protocolを推測・固定値で
+  補完しない。明確なHTTP/security不一致は`fail`、timeout、403、429、5xx、
+  証明不足は`unknown`とする。
+- 全target ObservationのD1保存完了後だけscheduler heartbeatを`pass`にする。
+  設定・adapter・D1障害ではpass heartbeatを残さず、D1 binding自体の欠損は
+  handler failureとheartbeat欠落を独立monitorで検知する。
 
 ### GRD-F-004 CMS/Cloudflare監視
 
@@ -184,4 +192,3 @@ remote未実施は`NOT_RUN`または`BLOCKED`とし、`PASS`にしない。
 - retention/legal hold owner
 - production/staging D1/R2/Queue/DLQ実ID
 - CloudFlare-CMS endpoint/secretの本番設定
-
